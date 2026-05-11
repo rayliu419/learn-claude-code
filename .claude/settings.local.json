@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(node server.js)",
+      "Bash(curl -s http://localhost:3456/api/projects)",
+      "Bash(curl *)",
+      "Bash(lsof -ti:3456)",
+      "Bash(xargs kill *)",
+      "Bash(open *)",
+      "Bash(node *)",
+      "Bash(bash -c 'source /Users/liurui/.claude/session-analyzer/start.sh')",
+      "Bash(bash -c 'cd /Users/liurui/.claude/session-analyzer && source ./start.sh')",
+      "Bash(cp /Users/liurui/.claude/statusline-command.sh /Users/liurui/.claude/statusline-command.sh.bak)",
+      "Bash(cat)",
+      "Bash(chmod +x /Users/liurui/.claude/statusline-command.sh)",
+      "Bash(chmod +x /Users/liurui/.claude/apps/session-debugger/hook.sh)",
+      "Bash(mkdir -p /Users/liurui/.claude/apps)",
+      "Bash(cp -r /Users/liurui/workspace/learn-claude-code/session-debugger /Users/liurui/.claude/apps/)",
+      "Bash(bash /Users/liurui/.claude/apps/session-debugger/hook.sh)",
+      "Bash(lsof -ti:8765)"
+    ]
+  }
+}
