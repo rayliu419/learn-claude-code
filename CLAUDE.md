@@ -81,3 +81,29 @@ This is a **teaching repository** for building a coding-agent harness. The struc
 ## Reference Source
 
 The production Claude Code source lives at `/Users/liurui/workspace/claude-code` — this learning repo teaches the design backbone, not a 1:1 mirror. Cross-reference the two when studying implementation details.
+
+## Three Independent Projects
+
+This repository contains **three separate projects** under the same root. They are independent and should not be confused:
+
+### `agents/` — Learning-by-Doing Agent Implementation
+- A teaching demo that shows how to implement a simple agent loop **from scratch**.
+- Each file (`s01_agent_loop.py` through `s19_*.py`) is self-contained, building up concepts incrementally.
+- Focus: understand the core mechanics — tool dispatch, loop construction, subagent spawning.
+- See also: `readings/` for conceptual deep dives.
+
+### `agents_new/` — Design-Pattern-Driven Implementation
+- Implements agent architecture based on the patterns described in `readings/agentic_design_pattern_cn.pdf`.
+- A different codebase from `agents/` — not an extension of the chapter files.
+- Focus: apply established agent design patterns (tool use, planning, multi-agent collaboration) from the ground up.
+
+### `claude-code/` — Production-Grade Coding Agent
+- The actual source code of Claude Code (`/Users/liurui/workspace/claude-code`).
+- Represents a **real-world, production-quality implementation** — far more complex than the teaching examples.
+- Focus: study this to see how a professional coding agent is architected and optimized.
+
+### How to Work with These Projects
+
+- When you ask questions, I need to know **which project** you're referring to — the answer may live in a different directory.
+- If your question doesn't specify a project, I will ask for clarification before searching for answers.
+- I will scan the relevant directory for context rather than assume files are in the root or under a single structure.
