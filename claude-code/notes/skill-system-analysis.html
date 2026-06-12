@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Skill 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  .arch-layer { margin:4px 0 4px 16px; padding:4px 0; border-left:2px solid var(--border); padding-left:12px; }
+  .arch-layer h4 { margin:2px 0; }
+
+  ul,ol { margin:4px 0 4px 20px; }
+  li { margin:2px 0; }
+
+  .two-col { display:flex; gap:12px; }
+  .two-col > * { flex:1; }
+
+  .tag { display:inline-block; background:var(--surface); border:1px solid var(--border); padding:1px 6px; border-radius:3px; font-size:0.82em; margin:0 2px; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>Claude Code Skill 系统设计分析</h1>
+  <div class="sub">多来源、统一类型、延迟加载的插件机制</div>
+  <div class="meta">
+    <span>来源: src/skills/ + src/tools/SkillTool/ + src/commands.ts</span>
+    <span>核心文件: ~15个</span>
+    <span>分析日期: 2026-05-31</span>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ==================== SUMMARY ==================== -->
+<h2>Summary — 整体架构</h2>
+
+<p>Skill 系统是 Claude Code 的<strong>可扩展任务能力层</strong>。它将领域知识和操作流程封装为 skill，模型通过 <code class="inline">Skill</code> 工具按需调用。架构核心思想是 <strong>"元数据先行，内容按需"</strong>——启动时只加载 YAML frontmatter 元数据（名称、描述、触发条件等），完整 SKILL.md 内容仅在调用时才展开。</p>
+
+<div class="card">
+  <h3 style="margin-top:0">五层来源，统一抽象</h3>
+  <div class="flow">                    ┌──────────────────────────┐
+                    │     Command 统一类型      │
+                    │  (PromptCommand / prompt) │
+                    └──────────────────────────┘
+                                    ▲
+            ┌───────────┬───────────┼───────────┬───────────┐
+            │           │           │           │           │
+       Bundled    File-based    Plugin      MCP       Dynamic
+       (编译进CLI)  (/skills/)  (市场插件)  (MCP协议)  (会话发现)
+
+  加载时机:  启动同步     启动异步     启动异步    运行时     会话中
+  存储位置:  内存数组     磁盘目录     插件目录    MCP服务器   .claude/</div>
+</div>
+
+<!-- ==================== DETAILS ==================== -->
+
+<h2>Details — 关键机制详解</h2>
+
+<!-- 1. 初始化 -->
+<h3>1. 初始化流程</h3>
+
+<p>Skill 初始化分<strong>三个阶段</strong>，从同步注册到异步加载再到每轮注入：</p>
+
+<h4>阶段一：同步注册 <span class="badge badge-blue">main.tsx 最早阶段</span></h4>
+<div class="flow">main.tsx (line ~1925)
+  ├─ initBuiltinPlugins()        → 注册内置插件定义到 plugin registry
+  └─ initBundledSkills()         → registerBundledSkill() 推入 bundledSkills[] 数组
+       ├─ update-config          ├─ keybindings
+       ├─ verify                 ├─ debug
+       ├─ simplify               ├─ review
+       ├─ loop                   ├─ claude-api
+       ├─ remember               ├─ skillify
+       └─ ... (共 ~16 个)</div>
+
+<h4>阶段二：异步加载 <span class="badge badge-green">memoized</span></h4>
+<div class="flow">getCommands(cwd) — memoized by cwd
+  └─ loadAllCommands(cwd)
+       ├─ getSkills(cwd)  ←── 并行
+       │    ├─ getSkillDirCommands(cwd)    → 扫描 managed/user/project/add-dir
+       │    ├─ getPluginSkills()           → 从已启用插件加载
+       │    ├─ getBundledSkills()          → 内存数组快照
+       │    └─ getBuiltinPluginSkillCommands() → 内置插件转换
+       ├─ getPluginCommands()  → 非 skill 类插件命令
+       └─ getWorkflowCommands(cwd) → workflow 脚本命令</div>
+
+<h4>阶段三：每轮注入 <span class="badge badge-purple">skill_listing attachment</span></h4>
+<div class="flow">collectAttachments(messages, context)
+  └─ getSkillListingAttachments(context)
+       ├─ 过滤: type='prompt' + 有描述 + 非 builtin + 非 disableModelInvocation
+       ├─ 追踪: sentSkillNames 记录已发送, 每轮只发新 skill
+       └─ 格式化: formatCommandsWithinBudget(commands, contextWindowTokens)
+            ├─ 预算: 上下文窗口的 1% (~8000 chars)
+            ├─ 截断: 单条描述上限 250 chars
+            ├─ bundled skill 永不被截断
+            └─ 超出预算时非 bundled 描述逐步缩短 → 极端情况仅保留名称</div>
+
+<div class="callout callout-tip">
+  <p><strong>关键设计</strong>：<code class="inline">getSkillDirCommands()</code> 和 <code class="inline">loadAllCommands()</code> 都是 memoized — 同一次会话不会重复扫描文件系统。chokidar 文件监听器在 SKILL.md 变化时清缓存，实现热更新。</p>
+</div>
+
+<!-- 2. 文件系统 Skill 加载 -->
+<h3>2. 文件系统 Skill 的加载与解析</h3>
+
+<h4>目录扫描顺序 (first-wins 优先级)</h4>
+<div class="flow">managed (policy)  →  user (~/.claude/skills/)  →  project (.claude/skills/ 向上遍历)
+  →  additional (--add-dir)  →  legacy (commands/ 目录兼容)</div>
+
+<h4>SKILL.md 格式</h4>
+<pre><code>---
+description: 一句话描述
+when_to_use: 帮助模型决定何时调用的提示
+allowed-tools: [Bash, Read, Edit]
+arguments: [name: 参数名, description: 参数说明, required: true]
+model: sonnet           # 可选: opus | sonnet | haiku | inherit
+context: fork           # 可选: inline(默认) | fork
+agent: general-purpose  # fork 时使用的 agent 类型
+effort: high            # thinking effort 级别
+paths: ["src/**/*.ts"] # 条件激活的 glob 模式
+user-invocable: true    # 用户可否通过 /skillname 调用
+disable-model-invocation: false
+hooks:                  # 生命周期钩子
+  PostToolUse: [...]
+version: 1.0
+---
+
+# Skill 内容 (markdown body)
+这里是 skill 的完整指令和领域知识...
+支持 ${ARGUMENTS} 替换和 !`shell 命令` 内联执行</code></pre>
+
+<h4>解析字段一览</h4>
+<table>
+  <tr><th>字段</th><th>类型</th><th>作用</th></tr>
+  <tr><td><code class="inline">description</code></td><td>string</td><td>skill 简述，skill_listing 中展示</td></tr>
+  <tr><td><code class="inline">when_to_use</code></td><td>string</td><td>触发条件提示，辅助模型决策</td></tr>
+  <tr><td><code class="inline">allowed-tools</code></td><td>string[]</td><td>skill 执行期间允许的工具白名单</td></tr>
+  <tr><td><code class="inline">arguments</code></td><td>ArgDef[]</td><td>命名参数定义，在 body 中通过 <code class="inline">$ARGUMENTS</code> 或 <code class="inline">{name}</code> 引用</td></tr>
+  <tr><td><code class="inline">model</code></td><td>string</td><td>模型覆盖，<code class="inline">inherit</code> 继承主对话模型</td></tr>
+  <tr><td><code class="inline">context</code></td><td>'inline'|'fork'</td><td>执行模式：展开到当前对话 vs 独立子 agent</td></tr>
+  <tr><td><code class="inline">agent</code></td><td>string</td><td>fork 时指定 agent 类型</td></tr>
+  <tr><td><code class="inline">effort</code></td><td>EffortValue</td><td>thinking effort 覆盖</td></tr>
+  <tr><td><code class="inline">paths</code></td><td>string[]</td><td>条件激活的 gitignore 风格 glob</td></tr>
+  <tr><td><code class="inline">hooks</code></td><td>HooksSettings</td><td>生命周期钩子配置</td></tr>
+  <tr><td><code class="inline">disable-model-invocation</code></td><td>boolean</td><td>禁止模型调用（仅用户可通过 / 调用）</td></tr>
+  <tr><td><code class="inline">version</code></td><td>string</td><td>skill 版本标识</td></tr>
+</table>
+
+<!-- 3. Bundled Skills 全景 -->
+<h3>3. Bundled Skills 全景</h3>
+
+<p>Bundled skills 是<strong>编译进 CLI 二进制文件中的 skill</strong>，在 <code class="inline">main.tsx</code> 启动时通过 <code class="inline">initBundledSkills()</code> 同步注册到内存数组，不需要文件系统扫描。与 file-based skill 的关键区别：</p>
+
+<table>
+  <tr><th>维度</th><th>Bundled</th><th>File-based</th></tr>
+  <tr><td>存储位置</td><td>代码中 (<code class="inline">src/skills/bundled/*.ts</code>)</td><td>磁盘目录 (<code class="inline">.claude/skills/</code>)</td></tr>
+  <tr><td>加载时机</td><td>启动时<strong>同步</strong>注册</td><td>启动时<strong>异步</strong>扫描</td></tr>
+  <tr><td>资源文件</td><td><code class="inline">files: Record&lt;string, string&gt;</code> 延迟提取到磁盘</td><td>SKILL.md 直接读磁盘</td></tr>
+  <tr><td>skill_listing 优先级</td><td>描述<strong>永不被截断</strong></td><td>预算不足时描述可被截断或移除</td></tr>
+  <tr><td>可否删除</td><td>不可删除（核心功能）</td><td>可删除</td></tr>
+</table>
+
+<h4>所有 Bundled Skills 一览</h4>
+
+<table>
+  <tr><th>名称</th><th>源文件</th><th>用途</th><th>执行</th><th>访问控制</th></tr>
+  <tr>
+    <td><code class="inline">update-config</code></td>
+    <td>updateConfig.ts</td>
+    <td>修改 Claude Code 配置 (settings.json): hooks、permissions、env vars、MCP、plugins。用于实现"从今以后当 X 时..."类自动化行为。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td><code class="inline">keybindings-help</code></td>
+    <td>keybindings.ts</td>
+    <td>创建或修改 <code class="inline">~/.claude/keybindings.json</code>，自定义键盘快捷键、chord bindings。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-purple">功能开关</span> 非 userInvocable</td>
+  </tr>
+  <tr>
+    <td><code class="inline">verify</code></td>
+    <td>verify.ts</td>
+    <td>通过运行应用并检查结果来验证代码变更是否达到了预期效果。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-red">ant only</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">debug</code></td>
+    <td>debug.ts</td>
+    <td>为当前 session 启用 debug 日志（或为 ant 读取已有日志），tail session debug log 分析错误和警告。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-orange">disableModelInvocation</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">lorem-ipsum</code></td>
+    <td>loremIpsum.ts</td>
+    <td>生成长上下文测试用的填充文本，按请求的 token 数量输出（上限 500k）。参数 <code class="inline">[token_count]</code>。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-red">ant only</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">skillify</code></td>
+    <td>skillify.ts</td>
+    <td>通过交互式访谈将当前 session 的可重复流程捕获为 SKILL.md 文件，引导用户完成命名、步骤拆解和配置。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-red">ant only</span> <span class="badge badge-orange">disableModelInvocation</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">remember</code></td>
+    <td>remember.ts</td>
+    <td>审查 auto-memory 条目，提出清理/升级/冲突解决的方案，涉及 CLAUDE.md / CLAUDE.local.md / team memory 等层级。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-red">ant only</span> <span class="badge badge-purple">autoMemory 开关</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">simplify</code></td>
+    <td>simplify.ts</td>
+    <td>审查 <code class="inline">git diff</code> 中的所有变更文件的代码复用、质量、效率，启动三个并行 review agent 后修复所有发现的问题。</td>
+    <td><span class="badge badge-green">inline</span> (3个子agent)</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td><code class="inline">batch</code></td>
+    <td>batch.ts</td>
+    <td>研究、规划并执行大规模机械性变更，协调 5-30 个并行隔离 git worktree agent，每个独立开 PR。</td>
+    <td><span class="badge badge-green">inline</span> (编排多个fork)</td>
+    <td><span class="badge badge-orange">disableModelInvocation</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">stuck</code></td>
+    <td>stuck.ts</td>
+    <td>排查本机卡死、停滞或变慢的 Claude Code session（仅诊断，不杀进程），将结果发到 Slack #claude-code-feedback。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-red">ant only</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">loop</code></td>
+    <td>loop.ts</td>
+    <td>按可配间隔（默认 10 分钟）使用 cron 系统排定重复执行的 prompt 或 slash command，并立即执行一次。参数 <code class="inline">[interval] &lt;prompt&gt;</code>。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-purple">AGENT_TRIGGERS</span> <span class="badge badge-purple">KairosCron 开关</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">schedule</code></td>
+    <td>scheduleRemoteAgents.ts</td>
+    <td>创建、更新、列出或手动运行按 cron 计划在 Anthropic 云基础设施上执行的远程 Claude Code agent（CCR triggers），可选配 MCP connectors。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-purple">AGENT_TRIGGERS_REMOTE</span> <span class="badge badge-purple">策略开关</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">claude-api</code></td>
+    <td>claudeApi.ts</td>
+    <td>按语言检测提供构建 Claude API / Anthropic SDK / Agent SDK 应用的内联参考文档，涵盖 streaming、tool use、prompt caching、batch processing 等。</td>
+    <td><span class="badge badge-green">inline</span> (大量内联文档)</td>
+    <td><span class="badge badge-purple">BUILDING_CLAUDE_APPS</span></td>
+  </tr>
+  <tr>
+    <td><code class="inline">claude-in-chrome</code></td>
+    <td>claudeInChrome.ts</td>
+    <td>通过 Claude-in-Chrome MCP 浏览器扩展自动化 Chrome 交互：点击元素、填写表单、截图、读控制台日志、导航网站。</td>
+    <td><span class="badge badge-green">inline</span></td>
+    <td><span class="badge badge-purple">功能开关</span></td>
+  </tr>
+  <tr>
+    <td colspan="5" style="color:var(--text-dim); text-align:center; padding:8px;"><em>以下 3 个 skill 的源文件未包含在此仓库中，仅见 index.ts 注册入口</em></td>
+  </tr>
+  <tr>
+    <td><code class="inline">dream</code></td>
+    <td>dream.ts (缺失)</td>
+    <td colspan="2">— 受 <span class="badge badge-purple">KAIROS / KAIROS_DREAM</span> feature flag 控制</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td><code class="inline">hunter</code></td>
+    <td>hunter.ts (缺失)</td>
+    <td colspan="2">— 受 <span class="badge badge-purple">REVIEW_ARTIFACT</span> feature flag 控制</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td><code class="inline">run-skill-generator</code></td>
+    <td>runSkillGenerator.ts (缺失)</td>
+    <td colspan="2">— 受 <span class="badge badge-purple">RUN_SKILL_GENERATOR</span> feature flag 控制</td>
+    <td>—</td>
+  </tr>
+</table>
+
+<h4>访问控制机制</h4>
+
+<div class="two-col">
+  <div class="card">
+    <h4 style="margin-top:0">用户类型 <span class="badge badge-red">ant only</span></h4>
+    <p>仅 Anthropic 内部员工可用：</p>
+    <ul>
+      <li><code class="inline">verify</code> — 代码变更验证</li>
+      <li><code class="inline">lorem-ipsum</code> — 长上下文测试</li>
+      <li><code class="inline">skillify</code> — session 转 skill</li>
+      <li><code class="inline">remember</code> — auto-memory 管理</li>
+      <li><code class="inline">stuck</code> — session 诊断</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4 style="margin-top:0">Feature Flag <span class="badge badge-purple">功能开关</span></h4>
+    <p>通过 feature flag 控制：</p>
+    <ul>
+      <li><code class="inline">AGENT_TRIGGERS</code> → loop</li>
+      <li><code class="inline">AGENT_TRIGGERS_REMOTE</code> → schedule</li>
+      <li><code class="inline">BUILDING_CLAUDE_APPS</code> → claude-api</li>
+      <li><code class="inline">KAIROS / KAIROS_DREAM</code> → dream</li>
+      <li><code class="inline">REVIEW_ARTIFACT</code> → hunter</li>
+      <li><code class="inline">RUN_SKILL_GENERATOR</code> → run-skill-generator</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">调用方向控制</h4>
+  <table>
+    <tr><th>机制</th><th>含义</th><th>适用 skill</th></tr>
+    <tr>
+      <td><code class="inline">userInvocable: false</code></td>
+      <td>用户不能用 <code class="inline">/name</code> 调用，只有模型可以调用</td>
+      <td>keybindings-help</td>
+    </tr>
+    <tr>
+      <td><code class="inline">disableModelInvocation: true</code></td>
+      <td>模型不能主动调用，只有用户可以用 <code class="inline">/name</code> 调用</td>
+      <td>debug, skillify, batch</td>
+    </tr>
+  </table>
+</div>
+
+<!-- 4. Skill 调用流程 -->
+<h3>4. Skill 被调用时发生了什么</h3>
+
+<p>核心原则：<strong>元数据批量注入，内容按需加载。</strong> 下面是一个完整调用链路：</p>
+
+<div class="flow">模型决定调用 Skill( skill="review", args="." )
+  │
+  ├─ 1. validateInput()
+  │     ├─ 检查 skill 名非空，去掉前导 /
+  │     ├─ 实验性: 远程 canonical skill 检查 (_canonical_&lt;slug&gt;)
+  │     └─ findCommand(name) → 验证存在、type='prompt'、无 disableModelInvocation
+  │
+  ├─ 2. checkPermissions()
+  │     ├─ 检查 deny 规则 (拒绝列表)
+  │     ├─ 检查 allow 规则 (允许列表, 支持通配符如 review:*)
+  │     ├─ "仅安全属性" 自动允许 (无 hooks / allowedTools)
+  │     └─ 否则 → 弹出权限对话框询问用户
+  │
+  └─ 3. call()
+        ├─ recordSkillUsage(name) → 更新使用频率跟踪 (7天半衰期指数衰减)
+        │
+        ├─ context === 'fork' ?
+        │    └─ executeForkedSkill()
+        │         ├─ prepareForkedCommandContext() → 构建子 agent 上下文
+        │         ├─ runAgent() → 独立 token 预算 + 工具集
+        │         └─ 返回 { agentId, result }
+        │
+        └─ context === 'inline' (默认) ?
+             └─ processPromptSlashCommand(name, args, commands, context)
+                  ├─ command.getPromptForCommand(args, context)  ★ 此时才加载完整内容
+                  │    ├─ 读取 SKILL.md body
+                  │    ├─ 注入 "Base directory for this skill: /path"
+                  │    ├─ substituteArguments()    → 替换 ${ARGUMENTS}
+                  │    ├─ 替换 ${CLAUDE_SKILL_DIR} 和 ${CLAUDE_SESSION_ID}
+                  │    └─ executeShellCommandsInPrompt() → 执行 !`cmd` 内联 shell
+                  │
+                  ├─ registerSkillHooks(hooks)  → 注册 frontmatter 定义的钩子
+                  ├─ addInvokedSkill(name, content) → 注册到压缩保护列表
+                  └─ 返回 { newMessages, contextModifier }
+                       └─ contextModifier: { allowedTools, model, effort } 更新后续对话</div>
+
+<h4>Inline vs Fork — 设计决策</h4>
+<div class="two-col">
+  <div class="card">
+    <h4 style="margin-top:0">Inline <span class="badge badge-green">默认</span></h4>
+    <ul>
+      <li>SKILL.md 内容注入当前对话流</li>
+      <li>共享主对话的上下文窗口</li>
+      <li>适合轻量指令、模板展开</li>
+      <li>可修改 contextModifier (允许工具/模型/effort)</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4 style="margin-top:0">Fork <span class="badge badge-purple">隔离执行</span></h4>
+    <ul>
+      <li>独立子 agent，独立 token 预算</li>
+      <li>不污染主对话上下文</li>
+      <li>适合复杂多步操作</li>
+      <li>通过 runAgent() 异步执行，返回结果摘要</li>
+      <li>Analytics 标记 execution_context: 'fork'</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 4. Skill Artifact 加载策略 -->
+<h3>5. Skill 的 Artifact 加载策略</h3>
+
+<p>核心洞察：<strong>不是一次性全部 load。</strong> 系统分两层加载，严格遵循"最小上下文污染"原则。</p>
+
+<table>
+  <tr><th>层级</th><th>时机</th><th>加载内容</th><th>大小控制</th></tr>
+  <tr>
+    <td><span class="badge badge-blue">L1 元数据</span></td>
+    <td>启动时 + 每轮对话</td>
+    <td>name + description + whenToUse (frontmatter 解析结果)</td>
+    <td>上下文窗口 1% (~8000 chars)，单条 250 chars 硬上限</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-orange">L2 完整内容</span></td>
+    <td>Skill 工具被调用时</td>
+    <td>完整 SKILL.md body + shell 命令执行结果 + 变量替换</td>
+    <td>无硬限制，但 fork 模式有子 agent token 预算</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-purple">L3 附件资源</span></td>
+    <td>Skill 调用时 (bundled)</td>
+    <td>bundled skill 的 <code class="inline">files: Record&lt;string, string&gt;</code> 延迟提取到磁盘</td>
+    <td>按需提取，不预加载</td>
+  </tr>
+</table>
+
+<div class="card">
+  <h4 style="margin-top:0">skill_listing 的预算策略</h4>
+  <div class="flow">formatCommandsWithinBudget(commands, contextWindowTokens):
+
+  1. 计算总预算 = contextWindowTokens × 4 chars/token × 1%
+     后备默认: 200k × 4 × 1% = 8000 chars
+
+  2. 尝试完整描述 (name + description + whenToUse)
+     → 如果在预算内 → 全部输出
+
+  3. 否则:
+     ├─ bundled skills   → 完整描述 (优先保证)
+     ├─ 非 bundled       → 剩余预算 / 数量 = maxDescLen
+     ├─ maxDescLen ≥ 20  → 按 maxDescLen 截断描述
+     └─ maxDescLen &lt; 20  → 非 bundled 只输出名称 (极端情况)
+
+  4. 去重: sentSkillNames 集合跟踪已发送,
+     每轮只发送 newSkills (首次出现的 skill)</div>
+</div>
+
+<!-- 5. 冲突机制 -->
+<h3>6. 多 Skill 冲突处理</h3>
+
+<h4>去重分两层</h4>
+
+<table>
+  <tr><th>层级</th><th>机制</th><th>范围</th><th>策略</th></tr>
+  <tr>
+    <td><span class="badge badge-green">文件级</span></td>
+    <td><code class="inline">getFileIdentity(filePath)</code> — realpath 解析 symlink</td>
+    <td>同一加载来源内 (managed/user/project...)</td>
+    <td>first-wins, 后续相同 realpath 跳过 + debug log</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-orange">名称级</span></td>
+    <td><code class="inline">findCommand()</code> — 数组顺序查找, 返回第一个匹配</td>
+    <td>跨来源 (bundled → builtinPlugin → file → workflow → plugin)</td>
+    <td>隐式覆盖, 无警告</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-purple">动态级</span></td>
+    <td><code class="inline">baseCommandNames.has(s.name)</code> 检查</td>
+    <td>动态 skill vs 已加载 skill</td>
+    <td>同名跳过, 不覆盖已有</td>
+  </tr>
+</table>
+
+<h4>合并顺序决定了名称冲突时的优先级：</h4>
+<div class="flow">loadAllCommands() 返回数组顺序:
+  [...bundledSkills, ...builtinPluginSkills, ...skillDirCommands,
+   ...workflowCommands, ...pluginCommands, ...pluginSkills, ...COMMANDS()]
+
+  findCommand(name) → Array.find(c => c.name === name || c.aliases?.includes(name))
+  → 前面的来源优先级更高</div>
+
+<div class="callout callout-warn">
+  <p><strong>潜在风险</strong>：</p>
+  <ul>
+    <li>同一来源内两个 skill 同名：第二个被 findCommand 忽略，无警告</li>
+    <li>两个 skill 声明了重叠的 <code class="inline">when_to_use</code> 触发条件：系统不做语义冲突检测，模型自行判断</li>
+    <li>条件 skill (<code class="inline">paths:</code>) 存储于 <code class="inline">conditionalSkills</code> Map，激活后移入 <code class="inline">dynamicSkills</code>，不与无条件 skill 冲突</li>
+    <li>如果 project 级别定义了与 bundled skill 同名的 skill，bundled 版本优先（因为它在数组最前面）</li>
+  </ul>
+</div>
+
+<!-- 6. 条件 Skill & 动态发现 -->
+<h3>7. 条件 Skill 与动态发现</h3>
+
+<div class="card">
+  <h4 style="margin-top:0">条件 Skill <span class="badge badge-blue">paths: frontmatter</span></h4>
+  <p>带有 <code class="inline">paths: ["src/**/*.sql"]</code> frontmatter 的 skill 启动时进入 <code class="inline">conditionalSkills</code> Map（休眠）。当模型读取或写入匹配 glob 的文件时，<code class="inline">activateConditionalSkillsForPaths()</code> 将其激活并移入 <code class="inline">dynamicSkills</code>。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">动态 Skill 发现 <span class="badge badge-purple">会话中</span></h4>
+  <p>当文件操作发生时，<code class="inline">discoverSkillDirsForPaths()</code> 从操作的文件路径向上遍历至 cwd，寻找 <code class="inline">.claude/skills/</code> 目录。新发现的目录通过 <code class="inline">addSkillDirectories()</code> 加载，较深路径覆盖较浅路径。发现后触发 <code class="inline">clearCommandMemoizationCaches()</code> 刷新命令列表。</p>
+</div>
+
+<!-- 7. 关键文件索引 -->
+<h3>8. 关键文件索引</h3>
+
+<table>
+  <tr><th>文件</th><th>角色</th></tr>
+  <tr><td><code class="inline">src/types/command.ts</code></td><td>核心类型: Command, PromptCommand, CommandBase</td></tr>
+  <tr><td><code class="inline">src/skills/bundledSkills.ts</code></td><td>打包技能注册: registerBundledSkill(), getBundledSkills()</td></tr>
+  <tr><td><code class="inline">src/skills/bundled/index.ts</code></td><td>initBundledSkills() — 所有打包技能的集中注册</td></tr>
+  <tr><td><code class="inline">src/skills/loadSkillsDir.ts</code></td><td>文件系统 skill 加载、解析、去重、条件 skill、动态发现</td></tr>
+  <tr><td><code class="inline">src/commands.ts</code></td><td>中央聚合: getCommands(), getSkillToolCommands(), findCommand()</td></tr>
+  <tr><td><code class="inline">src/tools/SkillTool/SkillTool.ts</code></td><td>Skill 工具: validateInput, checkPermissions, call (inline/fork)</td></tr>
+  <tr><td><code class="inline">src/tools/SkillTool/prompt.ts</code></td><td>工具描述 + formatCommandsWithinBudget() 预算控制</td></tr>
+  <tr><td><code class="inline">src/tools/SkillTool/constants.ts</code></td><td>SKILL_TOOL_NAME = "Skill"</td></tr>
+  <tr><td><code class="inline">src/utils/attachments.ts</code></td><td>skill_listing attachment 生成与注入</td></tr>
+  <tr><td><code class="inline">src/utils/processUserInput/processSlashCommand.tsx</code></td><td>/skillname 展开: shell 执行 + hooks 注册 + attachment 处理</td></tr>
+  <tr><td><code class="inline">src/utils/frontmatterParser.ts</code></td><td>YAML frontmatter 解析: parseFrontmatter()</td></tr>
+  <tr><td><code class="inline">src/utils/skills/skillChangeDetector.ts</code></td><td>chokidar 文件监听, 热更新</td></tr>
+  <tr><td><code class="inline">src/utils/suggestions/skillUsageTracking.ts</code></td><td>使用频率跟踪 (7天半衰期指数衰减排名)</td></tr>
+  <tr><td><code class="inline">src/utils/plugins/loadPluginCommands.ts</code></td><td>插件 skill 加载</td></tr>
+  <tr><td><code class="inline">src/skills/mcpSkillBuilders.ts</code></td><td>MCP skill 构建桥接 (避免循环依赖)</td></tr>
+</table>
+
+<!-- ==================== CONCLUSION ==================== -->
+<h2>Conclusion — 回顾与串联</h2>
+
+<div class="card">
+  <p><strong>Summary 中的架构图</strong>描述了五层来源如何汇入统一的 <code class="inline">Command</code> 抽象。这五层来源在 <strong>Details 第 1 节</strong>的三阶段初始化中被依次加载和组合。</p>
+
+  <p><strong>Details 第 2 节</strong>解释了文件系统 skill 的 SKILL.md 格式和解析流程——这是五层中"File-based"来源的具体实现。第 3 节展示了调用链路，揭示了 <code class="inline">context: inline|fork</code> 的分叉执行模式。</p>
+
+  <p><strong>第 4 节</strong>回答了核心问题：artifact 不是全量预加载的。L1 元数据（name + description + whenToUse）在启动时批量注入 <code class="inline">skill_listing</code> attachment，受 1% 上下文窗口预算严格约束。L2 完整内容仅在 <code class="inline">getPromptForCommand()</code> 调用时才加载——这是"元数据先行，内容按需"架构的关键。</p>
+
+  <p><strong>第 5 节</strong>回答冲突问题：文件级通过 realpath 去重（first-wins），名称级通过数组顺序隐式解决（无警告），没有语义级别的冲突检测。第 6 节的动态发现和条件 skill 是对静态加载的补充，让 skill 系统能响应会话中的文件操作。</p>
+</div>
+
+<div class="callout callout-tip">
+  <p><strong>一句话总结</strong>：Skill 系统 = 多来源统一抽象 + 元数据预载/内容延迟 + inline/fork 双模执行 + 文件级去重/名称级隐式覆盖。它不是"把所有 skill 灌给模型"，而是"让模型知道有什么 skill 可用，用时再加载"。</p>
+</div>
+
+</div>
+</body>
+</html>

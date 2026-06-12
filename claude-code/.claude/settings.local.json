@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/liurui/workspace/java/NewJava/algorithm/src/main/java/leetcode/leetcode_summary/**)"
+    ]
+  }
+}

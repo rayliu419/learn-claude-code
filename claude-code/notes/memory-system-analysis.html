@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Memory 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  /* Hero */
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  /* Container */
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  /* Headings */
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  /* Cards */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  /* Code */
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  /* Badges */
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  /* Flowchart */
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  /* Callout */
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  /* File refs */
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* Lifecycle bar */
+  .lifecycle-bar { display:flex; border-radius:6px; overflow:hidden; height:28px; margin:8px 0; font-size:0.72em; font-weight:600; }
+  .lifecycle-bar div { display:flex; align-items:center; justify-content:center; }
+
+  /* Lists in cards */
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code Memory 系统设计分析</h1>
+  <p class="sub">持久化记忆的触发时机、运作机制与决策规则</p>
+  <div class="meta">
+    <span>~/.claude/projects/&lt;slug&gt;/memory/</span>
+    <span>四类型分类法</span>
+    <span>双写入者 + 互斥</span>
+    <span>夜间整合</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的 Memory 系统是一套<strong>以提示词驱动为主、后台 Agent 兜底为辅</strong>的持久化记忆机制。核心设计思想：</p>
+
+<div class="card">
+  <p style="margin:0"><strong>不在代码中做分类决策。</strong>所有"该不该保存"的判断都交给 LLM，通过精心设计的系统提示词（类型分类法 + 排除规则 + 示例）引导模型自行决策。代码层只负责存储基础设施、触发时机和工具权限控制。</p>
+</div>
+
+<h3>关键数字</h3>
+<table>
+  <tr><td style="width:140px">记忆类型</td><td>4 种（user / feedback / project / reference）</td></tr>
+  <tr><td>写入者</td><td>2 个（主 Agent + 后台提取 Agent），互斥运行</td></tr>
+  <tr><td>存储位置</td><td><code class="inline">~/.claude/projects/&lt;sanitized-git-root&gt;/memory/</code></td></tr>
+  <tr><td>索引文件</td><td><code class="inline">MEMORY.md</code>，≤ 200 行 / 25KB，总是注入系统提示词</td></tr>
+  <tr><td>记忆上限</td><td>扫描最多 200 个 .md 文件（按 mtime 降序）</td></tr>
+  <tr><td>后台 Agent</td><td>最多 5 turns，推荐 2 turns（turn1 并行 Read → turn2 并行 Write）</td></tr>
+  <tr><td>陈旧警告</td><td>超过 1 天的记忆注入 <code class="inline">&lt;system-reminder&gt;</code> 验证提醒</td></tr>
+</table>
+
+<h3>三条核心设计原则</h3>
+
+<div class="card">
+  <h4 style="margin-top:0">1. 可推导的不保存</h4>
+  <p style="margin:0">代码模式、架构、文件路径、git 历史、调试方案都是可推导信息，不进入记忆系统。记忆只捕获<strong>代码中不存在但决策需要的东西</strong>——用户偏好、项目截止日期、外部系统指针、踩坑教训。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">2. 双写入者互斥</h4>
+  <p style="margin:0">主 Agent 在对话中自行判断并写入；后台提取 Agent 在每轮 query loop 结束时补漏。同轮互斥——主 Agent 写了，后台 Agent 就跳过，只 advance cursor。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">3. 回忆时验证，而非保存时设 TTL</h4>
+  <p style="margin:0">没有自动过期机制。陈旧记忆的淘汰靠回忆时的验证——模型被要求在引用记忆中的文件路径/函数名前，先用 grep 确认其仍然存在。冲突则当场更新或删除。</p>
+</div>
+
+<h2>二、触发时机（四条路径）</h2>
+
+<h3>路径 1：主 Agent 自行写入 <span class="badge badge-green">提示词驱动</span></h3>
+<p>系统提示词中包含完整保存指令（类型分类 + when_to_save + 示例），模型匹配到条件时自主调用 Write/Edit 写入 memory 文件。没有代码逻辑做"该不该写"的判断。</p>
+<div class="callout-tip callout"><p style="margin:0">触发：用户行为匹配四种类型的 <code class="inline">&lt;when_to_save&gt;</code> 规则，或用户明确说"记住这个"。</p></div>
+
+<h3>路径 2：后台提取 Agent <span class="badge badge-blue">代码驱动</span></h3>
+<p>在每个 query loop 结束时，<code class="inline">handleStopHooks</code> 调用 <code class="inline">executeExtractMemories()</code>。fork 子 Agent（共享 prompt cache），分析本轮对话增量，补写主 Agent 遗漏的记忆。</p>
+<div class="callout-tip callout"><p style="margin:0">触发条件：<code class="inline">tengu_passport_quail</code> gate 开启 + 非 remote mode + 主 Agent 本轮未写记忆文件 + turn throttle（默认每 1 turn）。</p></div>
+
+<h3>路径 3：Session Memory <span class="badge badge-purple">代码驱动</span></h3>
+<p>同样是 post-sampling hook，但独立于 auto memory。将当前会话摘要写入 session 文件，主要用于 compaction 替代，不跨 session。</p>
+<div class="callout-tip callout"><p style="margin:0">触发：token 达到 10000 初始化 → 之后每 5000 token 增量 + 3 次 tool call，或对话自然断点。</p></div>
+
+<h3>路径 4：夜间 Dream 整合 <span class="badge badge-orange">定时/手动</span></h3>
+<p>KAIROS assistant mode 下的独立批处理。读取 daily logs + session transcripts + 现有记忆文件，去重、合并、修剪索引。</p>
+
+<h3>四种记忆生命周期</h3>
+<div class="lifecycle-bar">
+  <div style="width:12%;background:rgba(248,81,73,0.2);color:var(--red)">Plan/Task 当前对话</div>
+  <div style="width:18%;background:rgba(188,140,255,0.2);color:var(--purple)">Session Memory 单session</div>
+  <div style="width:14%;background:rgba(210,153,29,0.2);color:var(--orange)">Daily Log 待整合</div>
+  <div style="width:56%;background:rgba(63,185,80,0.2);color:var(--green)">Auto Memory 跨session持久</div>
+</div>
+
+<h2>三、决策规则：什么保存，什么不保存</h2>
+
+<h3>四类型分类法</h3>
+<p>每种类型有精确的 <code class="inline">&lt;when_to_save&gt;</code> 和 <code class="inline">&lt;how_to_use&gt;</code>，定义在 <code class="inline">memoryTypes.ts</code>。</p>
+
+<table>
+  <thead><tr><th>类型</th><th>保存时机 (when_to_save)</th><th>使用时机 (how_to_use)</th><th>示例关键词</th></tr></thead>
+  <tbody>
+    <tr><td><span class="badge badge-green">user</span></td><td>了解到用户的角色/偏好/职责/知识水平</td><td>回答时适配用户背景（资深 vs 新手）</td><td>"我是数据科学家"、"写了十年 Go"</td></tr>
+    <tr><td><span class="badge badge-orange">feedback</span></td><td>用户纠正做法 <strong>或</strong> 确认非显而易见的做法有效</td><td>避免用户重复同样的指导</td><td>"别 mock 数据库"、"对，一个 PR 更好"</td></tr>
+    <tr><td><span class="badge badge-blue">project</span></td><td>了解到谁在做什么、为什么、截止何时</td><td>理解需求背景，预判协调问题</td><td>"周四起冻结合并"、"法务要求的重写"</td></tr>
+    <tr><td><span class="badge badge-purple">reference</span></td><td>了解到外部系统的资源位置</td><td>用户提外部系统时查找对应资源</td><td>"Linear INGEST 项目"、"Grafana 面板"</td></tr>
+  </tbody>
+</table>
+
+<h3>五大排除规则</h3>
+<div class="card">
+  <ol style="margin:0;padding-left:18px">
+    <li style="margin:1px 0"><strong>代码模式/架构/文件路径</strong> — 可从当前项目状态推导</li>
+    <li style="margin:1px 0"><strong>Git 历史/谁改了什么</strong> — <code class="inline">git log</code> / <code class="inline">git blame</code> 是权威来源</li>
+    <li style="margin:1px 0"><strong>调试方案/fix recipe</strong> — 修复已在代码中，commit message 有上下文</li>
+    <li style="margin:1px 0"><strong>已在 CLAUDE.md 中的内容</strong> — 避免重复</li>
+    <li style="margin:1px 0"><strong>临时任务细节</strong> — 进行中的工作、临时状态、当前对话上下文</li>
+  </ol>
+</div>
+
+<div class="callout-warn callout">
+  <p style="margin:0"><strong>反滥用规则：</strong>这些排除规则<strong>即使用户明确要求保存也适用</strong>。如果用户让你"记住这周的 PR 列表"，反问：<em>"其中什么部分是出人意料的或非显而易见的？"</em> — 只有那部分值得存。</p>
+</div>
+
+<h3>完整决策流程</h3>
+<div class="flow">用户输入 / Agent 观察到某个事实
+  │
+  ├─ 能从代码/git/CLAUDE.md 推导？ ──── Yes ──→ <span style="color:var(--red)">不保存</span>
+  │   No
+  ▼
+匹配四种类型的 &lt;when_to_save&gt; 吗？
+  │
+  ├─ user:      了解用户角色/偏好/知识？ ── Yes ──→ <span style="color:var(--green)">保存为 user 记忆</span>
+  ├─ feedback:  用户纠正或确认了某个做法？ ── Yes ──→ <span style="color:var(--green)">保存为 feedback 记忆</span>
+  ├─ project:   了解了项目截止/目标/决策背景？── Yes ──→ <span style="color:var(--green)">保存为 project 记忆</span>
+  └─ reference: 知道了外部系统的资源位置？ ── Yes ──→ <span style="color:var(--green)">保存为 reference 记忆</span>
+  │
+  │  都不匹配 → <span style="color:var(--red)">不保存</span>
+  ▼
+是临时任务细节 / 当前对话范围？ ── Yes ──→ <span style="color:var(--orange)">用 Plan 或 Task 代替</span>
+  │   No
+  ▼
+<span style="color:var(--green)">保存为 memory 文件 → 更新 MEMORY.md 索引</span></div>
+
+<h3>主 Agent 与后台 Agent 的互斥写入</h3>
+<div class="flow">每轮 query loop 结束
+  │
+  ├─ 主 Agent 在本轮自己写了 memory 文件？
+  │   │  (hasMemoryWritesSince: 检查 assistant 消息中的 Write/Edit tool_use
+  │   │   的 file_path 是否在 auto-memory 目录)
+  │   │
+  │   Yes ──→ <span style="color:var(--orange)">后台 Agent 跳过</span>（advance cursor）
+  │
+  │   No ──→ <span style="color:var(--blue)">后台 Agent fork 启动</span>
+  │           ├─ 扫描现有记忆 (scanMemoryFiles → formatMemoryManifest)
+  │           ├─ 分类本轮对话内容 → 选择匹配的类型
+  │           ├─ turn 1: 并行 Read 可能需要更新的文件
+  │           └─ turn 2: 并行 Write/Edit 写入新记忆
+  ▼
+通知 UI (createMemorySavedMessage)</div>
+
+<h2>四、跨 session 持久化 vs 短周期存储</h2>
+
+<p>记忆文件写入后<strong>永久保留</strong>在磁盘上。每次新 session 启动时，<code class="inline">loadMemoryPrompt()</code> 读取 <code class="inline">MEMORY.md</code> 索引并注入系统提示词。代码中<strong>没有 TTL、没有自动过期、没有 cron 清理</strong>。</p>
+
+<h3>三种淘汰陈旧记忆的"软"机制</h3>
+
+<div class="card">
+  <h4 style="margin-top:0">1. 回忆时漂移验证 <span class="badge badge-blue">主动</span></h4>
+  <p style="margin:0">模型在<strong>使用</strong>记忆前被要求验证（<code class="inline">TRUSTING_RECALL_SECTION</code>）：记忆声称文件存在 → 先检查；声称函数/flag 存在 → 先 grep；用户要据此行动 → 必须验证。冲突 → <strong>当场更新或删除。</strong></p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">2. 陈旧警告标签 <span class="badge badge-purple">被动</span></h4>
+  <p style="margin:0">超过 1 天的记忆被注入 <code class="inline">&lt;system-reminder&gt;</code>："This memory is 47 days old. Memories are point-in-time observations, not live state — claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact."</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">3. 夜间整合修剪 <span class="badge badge-orange">批量</span></h4>
+  <p style="margin:0">KAIROS dream agent Phase 4（Prune and index）：删除指向已过时/错误/被取代记忆的索引条目；将 verbose 条目的细节移入 topic 文件；删除被证伪的事实。</p>
+</div>
+
+<h3>Project 记忆为何"衰减快"</h3>
+<div class="callout-warn callout">
+  <p style="margin:0"><strong>Project 类型的 body_structure 要求：</strong>必须包含 <strong>Why</strong> 行（动机/约束/利益相关方诉求）。未来 session 读到"周四起冻结合并"时，能根据 Why 推断是 3 月份的 release freeze，现在已是 5 月——记忆不再有效。</p>
+</div>
+
+<h3>三种存储生命周期对比</h3>
+<table>
+  <thead><tr><th>存储</th><th>位置</th><th>生命周期</th><th>读取方式</th><th>写入者</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Auto Memory</strong></td><td><code class="inline">~/.claude/.../memory/</code></td><td><span class="badge badge-green">跨 session 持久</span></td><td>MEMORY.md 自动注入系统提示词</td><td>主 Agent + 后台提取 Agent</td></tr>
+    <tr><td><strong>KAIROS Daily Log</strong></td><td><code class="inline">.../logs/YYYY/MM/YYYY-MM-DD.md</code></td><td><span class="badge badge-orange">缓冲，待整合</span></td><td>dream agent 整合时读取</td><td>主 Agent append-only</td></tr>
+    <tr><td><strong>Session Memory</strong></td><td><code class="inline">~/.claude/session-memory/&lt;id&gt;.md</code></td><td><span class="badge badge-red">单 session</span></td><td>compaction 时使用</td><td>session memory fork agent</td></tr>
+  </tbody>
+</table>
+
+<h2>五、数据流全貌</h2>
+<div class="flow">                          新 Session 启动
+                                │
+          ┌─────────────────────┼─────────────────────┐
+          ▼                     ▼                     ▼
+  loadMemoryPrompt()     claudemd.ts           teamMemorySync
+  注入 memory 提示词     getMemoryFiles()      pull 团队记忆
+  到系统提示词            加载 MEMORY.md
+          │                     │                     │
+          └─────────────────────┼─────────────────────┘
+                                │
+                                ▼
+                    系统提示词中包含完整记忆上下文
+                                │
+                                ▼
+                      ┌── 对话进行中 ──┐
+                      │               │
+                      ▼               ▼
+              主 Agent 判断      用户说出匹配
+              (when_to_save)     "记住这个"
+                      │               │
+                      └───────┬───────┘
+                              ▼
+                      Write/Edit memory 文件
+                              │
+                              ▼
+                      更新 MEMORY.md 索引
+                              │
+                              ▼
+                      Query Loop 结束
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+    extractMemories    sessionMemory    teamMemorySync
+    (主Agent未写则补漏)  (阈值触发)      (文件变更 push)
+              │               │               │
+              ▼               ▼               ▼
+         fork agent      fork agent       debounced push
+         写入 memory       更新 session     到服务器
+              │               │
+              └───────┬───────┘
+                      ▼
+              UI 通知 (MemorySavedMessage)
+                      │
+                      ▼
+              ┌── 下一条用户消息 (循环) ──┐
+              └──────────────────────────┘
+
+          ═══════════════════════════════════
+          │  夜间 (KAIROS mode)             │
+          │  autoDream consolidation        │
+          │  ├─ 读取 daily logs             │
+          │  ├─ Grep session transcripts    │
+          │  ├─ 合并 / 去重 / 更新          │
+          │  ├─ 删除被证伪的事实            │
+          │  └─ 修剪 MEMORY.md 索引         │
+          ═══════════════════════════════════</div>
+
+<h2>六、系统提示词内容</h2>
+
+<p>以下是从源码中提取的完整提示词内容，展示系统如何向 LLM 描述记忆机制。</p>
+
+<h3>6.1 自动记忆提示词（individual 模式）</h3>
+<p>由 <code class="inline">memdir.ts:buildMemoryLines()</code> 拼装，注入主 Agent 系统提示词。</p>
+
+<div class="flow"># auto memory
+
+You have a persistent, file-based memory system at `{memoryDir}`.
+This directory already exists — write to it directly with the Write tool
+(do not run mkdir or check for its existence).
+
+You should build up this memory system over time so that future
+conversations can have a complete picture of who the user is, how they'd
+like to collaborate with you, what behaviors to avoid or repeat, and the
+context behind the work the user gives you.
+
+If the user explicitly asks you to remember something, save it immediately
+as whichever type fits best. If they ask you to forget something, find and
+remove the relevant entry.
+
+## Types of memory
+
+There are several discrete types of memory that you can store in your
+memory system:
+
+&lt;types&gt;
+&lt;type&gt;
+    &lt;name&gt;user&lt;/name&gt;
+    &lt;description&gt;Contain information about the user's role, goals,
+    responsibilities, and knowledge. Great user memories help you tailor
+    your future behavior to the user's preferences and perspective...
+    &lt;/description&gt;
+    &lt;when_to_save&gt;When you learn any details about the user's role,
+    preferences, responsibilities, or knowledge&lt;/when_to_save&gt;
+    &lt;how_to_use&gt;When your work should be informed by the user's
+    profile or perspective...&lt;/how_to_use&gt;
+    &lt;examples&gt;
+    user: I'm a data scientist investigating what logging we have in place
+    assistant: [saves user memory: user is a data scientist, currently
+    focused on observability/logging]
+
+    user: I've been writing Go for ten years but this is my first time
+    touching the React side of this repo
+    assistant: [saves user memory: deep Go expertise, new to React and
+    this project's frontend — frame frontend explanations in terms of
+    backend analogues]
+    &lt;/examples&gt;
+&lt;/type&gt;
+&lt;type&gt;
+    &lt;name&gt;feedback&lt;/name&gt;
+    &lt;description&gt;Guidance the user has given you about how to approach
+    work — both what to avoid and what to keep doing. These are a very
+    important type of memory to read and write as they allow you to remain
+    coherent and responsive to the way you should approach work in the
+    project. Record from failure AND success: if you only save corrections,
+    you will avoid past mistakes but drift away from approaches the user
+    has already validated, and may grow overly cautious.&lt;/description&gt;
+    &lt;when_to_save&gt;Any time the user corrects your approach ("no not
+    that", "don't", "stop doing X") OR confirms a non-obvious approach
+    worked ("yes exactly", "perfect, keep doing that", accepting an
+    unusual choice without pushback). Corrections are easy to notice;
+    confirmations are quieter — watch for them. In both cases, save what
+    is applicable to future conversations, especially if surprising or
+    not obvious from the code. Include *why* so you can judge edge cases
+    later.&lt;/when_to_save&gt;
+    &lt;how_to_use&gt;Let these memories guide your behavior so that the
+    user does not need to offer the same guidance twice.&lt;/how_to_use&gt;
+    &lt;body_structure&gt;Lead with the rule itself, then a **Why:** line
+    (the reason the user gave — often a past incident or strong preference)
+    and a **How to apply:** line (when/where this guidance kicks in).
+    Knowing *why* lets you judge edge cases instead of blindly following
+    the rule.&lt;/body_structure&gt;
+    &lt;examples&gt;
+    user: don't mock the database in these tests — we got burned last
+    quarter when mocked tests passed but the prod migration failed
+    assistant: [saves feedback memory: integration tests must hit a real
+    database, not mocks. Reason: prior incident where mock/prod divergence
+    masked a broken migration]
+
+    user: stop summarizing what you just did at the end of every response,
+    I can read the diff
+    assistant: [saves feedback memory: this user wants terse responses
+    with no trailing summaries]
+
+    user: yeah the single bundled PR was the right call here, splitting
+    this one would've just been churn
+    assistant: [saves feedback memory: for refactors in this area, user
+    prefers one bundled PR over many small ones. Confirmed after I chose
+    this approach — a validated judgment call, not a correction]
+    &lt;/examples&gt;
+&lt;/type&gt;
+&lt;type&gt;
+    &lt;name&gt;project&lt;/name&gt;
+    &lt;description&gt;Information that you learn about ongoing work, goals,
+    initiatives, bugs, or incidents within the project that is not
+    otherwise derivable from the code or git history. Project memories
+    help you understand the broader context and motivation behind the
+    work the user is doing within this working directory.&lt;/description&gt;
+    &lt;when_to_save&gt;When you learn who is doing what, why, or by when.
+    These states change relatively quickly so try to keep your
+    understanding of this up to date. Always convert relative dates in
+    user messages to absolute dates when saving (e.g., "Thursday" →
+    "2026-03-05"), so the memory remains interpretable after time
+    passes.&lt;/when_to_save&gt;
+    &lt;how_to_use&gt;Use these memories to more fully understand the
+    details and nuance behind the user's request and make better informed
+    suggestions.&lt;/how_to_use&gt;
+    &lt;body_structure&gt;Lead with the fact or decision, then a **Why:**
+    line (the motivation — often a constraint, deadline, or stakeholder
+    ask) and a **How to apply:** line (how this should shape your
+    suggestions). Project memories decay fast, so the why helps
+    future-you judge whether the memory is still load-bearing.
+    &lt;/body_structure&gt;
+    &lt;examples&gt;
+    user: we're freezing all non-critical merges after Thursday — mobile
+    team is cutting a release branch
+    assistant: [saves project memory: merge freeze begins 2026-03-05 for
+    mobile release cut. Flag any non-critical PR work scheduled after
+    that date]
+
+    user: the reason we're ripping out the old auth middleware is that
+    legal flagged it for storing session tokens in a way that doesn't
+    meet the new compliance requirements
+    assistant: [saves project memory: auth middleware rewrite is driven
+    by legal/compliance requirements around session token storage, not
+    tech-debt cleanup — scope decisions should favor compliance over
+    ergonomics]
+    &lt;/examples&gt;
+&lt;/type&gt;
+&lt;type&gt;
+    &lt;name&gt;reference&lt;/name&gt;
+    &lt;description&gt;Stores pointers to where information can be found in
+    external systems. These memories allow you to remember where to look
+    to find up-to-date information outside of the project directory.
+    &lt;/description&gt;
+    &lt;when_to_save&gt;When you learn about resources in external systems
+    and their purpose. For example, that bugs are tracked in a specific
+    project in Linear or that feedback can be found in a specific Slack
+    channel.&lt;/when_to_save&gt;
+    &lt;how_to_use&gt;When the user references an external system or
+    information that may be in an external system.&lt;/how_to_use&gt;
+    &lt;examples&gt;
+    user: check the Linear project "INGEST" if you want context on these
+    tickets, that's where we track all pipeline bugs
+    assistant: [saves reference memory: pipeline bugs are tracked in
+    Linear project "INGEST"]
+
+    user: the Grafana board at grafana.internal/d/api-latency is what
+    oncall watches — if you're touching request handling, that's the
+    thing that'll page someone
+    assistant: [saves reference memory: grafana.internal/d/api-latency
+    is the oncall latency dashboard — check it when editing request-path
+    code]
+    &lt;/examples&gt;
+&lt;/type&gt;
+&lt;/types&gt;
+
+## What NOT to save in memory
+
+- Code patterns, conventions, architecture, file paths, or project
+  structure — these can be derived by reading the current project state.
+- Git history, recent changes, or who-changed-what — `git log` / `git
+  blame` are authoritative.
+- Debugging solutions or fix recipes — the fix is in the code; the commit
+  message has the context.
+- Anything already documented in CLAUDE.md files.
+- Ephemeral task details: in-progress work, temporary state, current
+  conversation context.
+
+These exclusions apply even when the user explicitly asks you to save. If
+they ask you to save a PR list or activity summary, ask what was
+*surprising* or *non-obvious* about it — that is the part worth keeping.
+
+## How to save memories
+
+Saving a memory is a two-step process:
+
+**Step 1** — write the memory to its own file (e.g., `user_role.md`,
+`feedback_testing.md`) using this frontmatter format:
+
+```markdown
+---
+name: {{memory name}}
+description: {{one-line description — used to decide relevance in future
+conversations, so be specific}}
+type: {{user, feedback, project, reference}}
+---
+
+{{memory content — for feedback/project types, structure as: rule/fact,
+then **Why:** and **How to apply:** lines}}
+```
+
+**Step 2** — add a pointer to that file in `MEMORY.md`. `MEMORY.md` is an
+index, not a memory — each entry should be one line, under ~150 characters:
+`- [Title](file.md) — one-line hook`. It has no frontmatter. Never write
+memory content directly into `MEMORY.md`.
+
+- `MEMORY.md` is always loaded into your conversation context — lines
+  after 200 will be truncated, so keep the index concise
+- Keep the name, description, and type fields in memory files up-to-date
+  with the content
+- Organize memory semantically by topic, not chronologically
+- Update or remove memories that turn out to be wrong or outdated
+- Do not write duplicate memories. First check if there is an existing
+  memory you can update before writing a new one.
+
+## When to access memories
+- When memories seem relevant, or the user references prior-conversation
+  work.
+- You MUST access memory when the user explicitly asks you to check,
+  recall, or remember.
+- If the user says to *ignore* or *not use* memory: proceed as if
+  MEMORY.md were empty. Do not apply remembered facts, cite, compare
+  against, or mention memory content.
+- Memory records can become stale over time. Use memory as context for
+  what was true at a given point in time. Before answering the user or
+  building assumptions based solely on information in memory records,
+  verify that the memory is still correct and up-to-date by reading the
+  current state of the files or resources. If a recalled memory conflicts
+  with current information, trust what you observe now — and update or
+  remove the stale memory rather than acting on it.
+
+## Before recommending from memory
+
+A memory that names a specific function, file, or flag is a claim that it
+existed *when the memory was written*. It may have been renamed, removed,
+or never merged. Before recommending it:
+
+- If the memory names a file path: check the file exists.
+- If the memory names a function or flag: grep for it.
+- If the user is about to act on your recommendation (not just asking
+  about history), verify first.
+
+"The memory says X exists" is not the same as "X exists now."
+
+A memory that summarizes repo state (activity logs, architecture
+snapshots) is frozen in time. If the user asks about *recent* or *current*
+state, prefer `git log` or reading the code over recalling the snapshot.
+
+## Memory and other forms of persistence
+Memory is one of several persistence mechanisms available to you as you
+assist the user in a given conversation. The distinction is often that
+memory can be recalled in future conversations and should not be used for
+persisting information that is only useful within the scope of the current
+conversation.
+- When to use or update a plan instead of memory: If you are about to
+  start a non-trivial implementation task and would like to reach
+  alignment with the user on your approach you should use a Plan rather
+  than saving this information to memory. Similarly, if you already have
+  a plan within the conversation and you have changed your approach
+  persist that change by updating the plan rather than saving a memory.
+- When to use or update tasks instead of memory: When you need to break
+  your work in current conversation into discrete steps or keep track of
+  your progress use tasks instead of saving to memory. Tasks are great
+  for persisting information about the work that needs to be done in the
+  current conversation, but memory should be reserved for information
+  that will be useful in future conversations.</div>
+
+<h3>6.2 后台提取 Agent 提示词</h3>
+<p>由 <code class="inline">extractMemories/prompts.ts:buildExtractAutoOnlyPrompt()</code> 构建，注入 fork 子 Agent。</p>
+
+<div class="flow">You are now acting as the memory extraction subagent. Analyze the most
+recent ~N messages above and use them to update your persistent memory
+systems.
+
+Available tools: Read, Grep, Glob, read-only Bash (ls/find/cat/stat/wc/
+head/tail and similar), and Edit/Write for paths inside the memory
+directory only. Bash rm is not permitted. All other tools — MCP, Agent,
+write-capable Bash, etc — will be denied.
+
+You have a limited turn budget. Edit requires a prior Read of the same
+file, so the efficient strategy is: turn 1 — issue all Read calls in
+parallel for every file you might update; turn 2 — issue all Write/Edit
+calls in parallel. Do not interleave reads and writes across multiple
+turns.
+
+You MUST only use content from the last ~N messages to update your
+persistent memories. Do not waste any turns attempting to investigate or
+verify that content further — no grepping source files, no reading code
+to confirm a pattern exists, no git commands.
+
+## Existing memory files
+[List of existing memory files with type, description, and mtime]
+
+Check this list before writing — update an existing file rather than
+creating a duplicate.
+
+If the user explicitly asks you to remember something, save it immediately
+as whichever type fits best. If they ask you to forget something, find and
+remove the relevant entry.
+
+[Types section — same as 6.1 above]
+
+[What NOT to save — same as 6.1 above]
+
+[How to save — same two-step process as 6.1 above]</div>
+
+<h3>6.3 团队记忆提示词差异（combined 模式）</h3>
+<p>当 <code class="inline">TEAMMEM</code> feature 开启时，<code class="inline">teamMemPrompts.ts:buildCombinedMemoryPrompt()</code> 构建双目录模式的提示词，与 individual 模式的关键差异：</p>
+
+<div class="flow"># Memory
+
+You have a persistent, file-based memory system with two directories: a
+private directory at `{autoDir}` and a shared team directory at
+`{teamDir}`. Both directories already exist — write to them directly with
+the Write tool (do not run mkdir or check for their existence).
+
+## Memory scope
+
+There are two scope levels:
+
+- private: memories that are private between you and the current user.
+  They persist across conversations with only this specific user and are
+  stored at the root `{autoDir}`.
+- team: memories that are shared with and contributed by all of the users
+  who work within this project directory. Team memories are synced at the
+  beginning of every session and they are stored at `{teamDir}`.
+
+[Types section — includes &lt;scope&gt; tags per type:]
+  - user → always private
+  - feedback → default to private, save as team only when clearly a
+    project-wide convention (testing policy, build invariant), not a
+    personal style preference
+  - project → private or team, but strongly bias toward team
+  - reference → usually team
+
+[Additional exclusion:]
+- You MUST avoid saving sensitive data within shared team memories. For
+  example, never save API keys or user credentials.
+
+[How to save — Step 2 writes to the same directory's MEMORY.md; both
+ MEMORY.md indexes are loaded into context]</div>
+
+<h3>6.4 KAIROS 日常日志模式提示词</h3>
+<p>由 <code class="inline">memdir.ts:buildAssistantDailyLogPrompt()</code> 构建，用于 assistant 模式（长生命周期 session）。不维护 MEMORY.md 作为实时索引，而是 append-only 写入每日日志。</p>
+
+<div class="flow"># auto memory
+
+You have a persistent, file-based memory system found at: `{memoryDir}`
+
+This session is long-lived. As you work, record anything worth remembering
+by **appending** to today's daily log file:
+
+`{memoryDir}/logs/YYYY/MM/YYYY-MM-DD.md`
+
+Substitute today's date (from `currentDate` in your context) for
+`YYYY-MM-DD`. When the date rolls over mid-session, start appending to
+the new day's file.
+
+Write each entry as a short timestamped bullet. Create the file (and
+parent directories) on first write if it does not exist. Do not rewrite
+or reorganize the log — it is append-only. A separate nightly process
+distills these logs into `MEMORY.md` and topic files.
+
+## What to log
+- User corrections and preferences ("use bun, not npm"; "stop summarizing
+  diffs")
+- Facts about the user, their role, or their goals
+- Project context that is not derivable from the code (deadlines,
+  incidents, decisions and their rationale)
+- Pointers to external systems (dashboards, Linear projects, Slack
+  channels)
+- Anything the user explicitly asks you to remember
+
+[What NOT to save — same as 6.1]
+
+## MEMORY.md
+`MEMORY.md` is the distilled index (maintained nightly from your logs)
+and is loaded into your context automatically. Read it for orientation,
+but do not edit it directly — record new information in today's log
+instead.</div>
+
+<h3>6.5 Session Memory 提示词</h3>
+<p>由 <code class="inline">SessionMemory/prompts.ts</code> 构建。Session memory 是单个会话内的结构花笔记，用于 compaction 替代。</p>
+
+<h4>模板结构（DEFAULT_SESSION_MEMORY_TEMPLATE）</h4>
+<div class="flow"># Session Title
+_A short and distinctive 5-10 word descriptive title for the session._
+
+# Current State
+_What is actively being worked on right now? Pending tasks not yet
+completed. Immediate next steps._
+
+# Task specification
+_What did the user ask to build? Any design decisions or other
+explanatory context_
+
+# Files and Functions
+_What are the important files? In short, what do they contain and why are
+they relevant?_
+
+# Workflow
+_What bash commands are usually run and in what order? How to interpret
+their output if not obvious?_
+
+# Errors & Corrections
+_Errors encountered and how they were fixed. What did the user correct?
+What approaches failed and should not be tried again?_
+
+# Codebase and System Documentation
+_What are the important system components? How do they work/fit together?_
+
+# Learnings
+_What has worked well? What has not? What to avoid? Do not duplicate items
+from other sections_
+
+# Key results
+_If the user asked a specific output such as an answer to a question, a
+table, or other document, repeat the exact result here_
+
+# Worklog
+_Step by step, what was attempted, done? Very terse summary for each step_</div>
+
+<h4>更新指令（getDefaultUpdatePrompt 核心规则）</h4>
+<div class="flow">CRITICAL RULES FOR EDITING:
+- The file must maintain its exact structure with all sections, headers,
+  and italic descriptions intact
+- NEVER modify, delete, or add section headers
+- NEVER modify or delete the italic _section description_ lines
+- ONLY update the actual content that appears BELOW the italic _section
+  descriptions_ within each existing section
+- Do NOT add any new sections, summaries, or information outside the
+  existing structure
+- Do NOT reference this note-taking process or instructions anywhere in
+  the notes
+- It's OK to skip updating a section if there are no substantial new
+  insights to add
+- Write DETAILED, INFO-DENSE content — include file paths, function names,
+  error messages, exact commands, technical details
+- For "Key results", include the complete, exact output
+- Do not include information already in CLAUDE.md files
+- Keep each section under ~2000 tokens — condense by cycling out less
+  important details
+- IMPORTANT: Always update "Current State" to reflect the most recent
+  work — this is critical for continuity after compaction</div>
+
+<h3>6.6 夜间整合（Dream）提示词</h3>
+<p>由 <code class="inline">autoDream/consolidationPrompt.ts:buildConsolidationPrompt()</code> 构建。</p>
+
+<div class="flow"># Dream: Memory Consolidation
+
+You are performing a dream — a reflective pass over your memory files.
+Synthesize what you've learned recently into durable, well-organized
+memories so that future sessions can orient quickly.
+
+Memory directory: `{memoryRoot}`
+
+## Phase 1 — Orient
+- `ls` the memory directory to see what already exists
+- Read `MEMORY.md` to understand the current index
+- Skim existing topic files so you improve them rather than creating
+  duplicates
+- If `logs/` or `sessions/` subdirectories exist (assistant-mode layout),
+  review recent entries there
+
+## Phase 2 — Gather recent signal
+
+Look for new information worth persisting. Sources in rough priority order:
+
+1. **Daily logs** (`logs/YYYY/MM/YYYY-MM-DD.md`) if present — these are
+   the append-only stream
+2. **Existing memories that drifted** — facts that contradict something
+   you see in the codebase now
+3. **Transcript search** — if you need specific context, grep the JSONL
+   transcripts for narrow terms
+
+Don't exhaustively read transcripts. Look only for things you already
+suspect matter.
+
+## Phase 3 — Consolidate
+
+For each thing worth remembering, write or update a memory file at the
+top level of the memory directory. Use the memory file format and type
+conventions from your system prompt's auto-memory section.
+
+Focus on:
+- Merging new signal into existing topic files rather than creating
+  near-duplicates
+- Converting relative dates to absolute dates so they remain
+  interpretable
+- Deleting contradicted facts — if today's investigation disproves an old
+  memory, fix it at the source
+
+## Phase 4 — Prune and index
+
+Update `MEMORY.md` so it stays under 200 lines AND under ~25KB. It's an
+**index**, not a dump — each entry one line under ~150 characters.
+
+- Remove pointers to memories that are now stale, wrong, or superseded
+- Demote verbose entries — if an index line is over ~200 chars, shorten
+  it and move the detail to the topic file
+- Add pointers to newly important memories
+- Resolve contradictions — if two files disagree, fix the wrong one
+
+Return a brief summary of what you consolidated, updated, or pruned. If
+nothing changed (memories are already tight), say so.</div>
+
+<h2>七、代码引用索引</h2>
+
+<h3>核心层 — 提示词构建与路径解析</h3>
+<div class="file-ref"><span class="path">src/memdir/memoryTypes.ts</span><span class="role">四种记忆类型的 XML 定义（description / when_to_save / how_to_use / 示例）、WHAT_NOT_TO_SAVE_SECTION、WHEN_TO_ACCESS_SECTION、TRUSTING_RECALL_SECTION、MEMORY_FRONTMATTER_EXAMPLE</span></div>
+<div class="file-ref"><span class="path">src/memdir/memdir.ts</span><span class="role">核心模块。ENTRYPOINT_NAME='MEMORY.md'；buildMemoryLines() 组装提示词；loadMemoryPrompt() 分发 individual/combined/KAIROS 三种模式；ensureMemoryDirExists()；buildSearchingPastContextSection()</span></div>
+<div class="file-ref"><span class="path">src/memdir/paths.ts</span><span class="role">路径解析。getAutoMemPath() 返回记忆目录（优先级：env→settings→默认）；isAutoMemoryEnabled() 6级优先级链；isAutoMemPath() 路径归属判断（含路径穿越防护）</span></div>
+<div class="file-ref"><span class="path">src/memdir/memoryScan.ts</span><span class="role">扫描记忆目录，读 frontmatter 提取 type/description/mtime，按 mtime 降序排列（上限 200）。共享于回忆选择器和提取 Agent</span></div>
+<div class="file-ref"><span class="path">src/memdir/memoryAge.ts</span><span class="role">计算记忆年龄（today / yesterday / N days ago），超过 1 天生成陈旧警告 &lt;system-reminder&gt; 文本</span></div>
+<div class="file-ref"><span class="path">src/memdir/teamMemPaths.ts</span><span class="role">团队记忆路径解析（team 目录 = auto-memory 下的 team/ 子目录）</span></div>
+<div class="file-ref"><span class="path">src/memdir/teamMemPrompts.ts</span><span class="role">构建 combined (private+team) 模式提示词，含 &lt;scope&gt; 标签和双目录说明</span></div>
+
+<h3>后台提取引擎</h3>
+<div class="file-ref"><span class="path">src/services/extractMemories/extractMemories.ts</span><span class="role">提取引擎。initExtractMemories() 初始化 closure-scoped 状态；executeExtractMemories() hook入口；runExtraction() 完整流程：互斥检查→扫描现有记忆→fork agent→写文件→advance cursor→trailing run；createAutoMemCanUseTool() 受限权限；hasMemoryWritesSince() 主Agent写入检测</span></div>
+<div class="file-ref"><span class="path">src/services/extractMemories/prompts.ts</span><span class="role">提取 Agent 的 prompt。opener() 生成公共头部（turn budget：turn1 并行 Read → turn2 并行 Write）；buildExtractAutoOnlyPrompt() / buildExtractCombinedPrompt()</span></div>
+
+<h3>Session Memory</h3>
+<div class="file-ref"><span class="path">src/services/SessionMemory/sessionMemory.ts</span><span class="role">initSessionMemory() 注册 post-sampling hook；extractSessionMemory hook 实现（10K init → 5K+3 tool calls 更新）；manuallyExtractSessionMemory() 供 /summary；createMemoryFileCanUseTool() 只允许 Edit 指定文件</span></div>
+<div class="file-ref"><span class="path">src/services/SessionMemory/sessionMemoryUtils.ts</span><span class="role">阈值配置和状态管理（SessionMemoryConfig: minimumMessageTokensToInit / minimumTokensBetweenUpdate / toolCallsBetweenUpdates）</span></div>
+<div class="file-ref"><span class="path">src/services/SessionMemory/prompts.ts</span><span class="role">Session memory 更新 prompt 模板</span></div>
+<div class="file-ref"><span class="path">src/services/SessionMemory/sessionMemoryCompact.ts</span><span class="role">使用 session memory 内容替代传统 compaction summary</span></div>
+
+<h3>夜间整合</h3>
+<div class="file-ref"><span class="path">src/services/autoDream/consolidationPrompt.ts</span><span class="role">构建记忆整合 prompt（Phase1 Orient → Phase2 Gather → Phase3 Consolidate → Phase4 Prune & index）</span></div>
+
+<h3>工具层</h3>
+<div class="file-ref"><span class="path">src/utils/memoryFileDetection.ts</span><span class="role">检测文件路径是否属于记忆系统。isAutoManagedMemoryFile() 区分 Claude 管理 vs 用户管理的 CLAUDE.md；detectSessionFileType()；isShellCommandTargetingMemory()；memoryScopeForPath() 判断 personal/team scope</span></div>
+<div class="file-ref"><span class="path">src/utils/claudemd.ts</span><span class="role">getMemoryFiles() 加载 CLAUDE.md 和 MEMORY.md；processMemoryFile() 处理 @include</span></div>
+<div class="file-ref"><span class="path">src/utils/teamMemoryOps.ts</span><span class="role">团队记忆工具操作的辅助函数</span></div>
+
+<h3>团队同步</h3>
+<div class="file-ref"><span class="path">src/services/teamMemorySync/watcher.ts</span><span class="role">fs.watch 监听 team 目录，2s debounce 后增量 push（hash 比较），push 前扫描 secrets</span></div>
+<div class="file-ref"><span class="path">src/services/teamMemorySync/index.ts</span><span class="role">startTeamMemoryWatcher() 启动同步；pullTeamMemory() 下载；pushTeamMemory() PUT 增量上传</span></div>
+
+<h3>Agent 记忆与提示词集成</h3>
+<div class="file-ref"><span class="path">src/tools/AgentTool/agentMemory.ts</span><span class="role">loadAgentMemoryPrompt() 为启用了记忆的 agent 构建提示词（user/project/local 三种 scope）</span></div>
+<div class="file-ref"><span class="path">src/tools/AgentTool/agentMemorySnapshot.ts</span><span class="role">Agent 记忆快照管理</span></div>
+<div class="file-ref"><span class="path">src/constants/prompts.ts</span><span class="role">systemPromptSection('memory', () => loadMemoryPrompt()) — 将记忆提示词注入系统提示词（line 495）</span></div>
+
+<h3>UI 与初始化</h3>
+<div class="file-ref"><span class="path">src/commands/memory/memory.tsx</span><span class="role">/memory 命令的 MemoryFileSelector 对话框入口</span></div>
+<div class="file-ref"><span class="path">src/components/memory/MemoryFileSelector.tsx</span><span class="role">记忆文件浏览和编辑 UI</span></div>
+<div class="file-ref"><span class="path">src/components/memory/MemoryUpdateNotification.tsx</span><span class="role">记忆更新通知弹出</span></div>
+<div class="file-ref"><span class="path">src/components/MemoryUsageIndicator.tsx</span><span class="role">记忆用量指示器</span></div>
+<div class="file-ref"><span class="path">src/setup.ts</span><span class="role">initSessionMemory() 注册 session memory hook (line 294)；startTeamMemoryWatcher() 启动团队同步 (line 366)</span></div>
+
+<h2>八、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px">设计哲学：<strong>"让 LLM 做分类决策，代码只做基础设施。"</strong></p>
+  <p style="margin:0">整个系统没有一行代码写"if 用户说了 X then 保存 Y"。所有判断通过提示词引导模型自行完成。代码层提供的是：存储目录结构、写入时机触发、工具权限约束、互斥控制、陈旧检测、索引管理——即<strong>"在哪里写、什么时候写、能写什么"</strong>，而不是"该写什么"。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">灵活性</td><td>✅ 提示词驱动，模型自行判断边界情况（不需代码枚举所有场景）</td></tr>
+    <tr><td>准确性</td><td>⚠️ 依赖模型判断，可能遗漏或误存（后台提取 Agent 设计为补漏）</td></tr>
+    <tr><td>整洁性</td><td>✅ 排除规则 + 反滥用条款，防止记忆目录退化为活动日志</td></tr>
+    <tr><td>新鲜度</td><td>⚠️ 无自动过期。依赖回忆时验证 + 陈旧警告 + 夜间修剪（软机制）</td></tr>
+    <tr><td>安全性</td><td>✅ 路径穿越防护、团队记忆 secret 扫描、工具权限严格限制</td></tr>
+    <tr><td>成本</td><td>✅ 后台 Agent 限制 5 turns，推荐 2 turns；共享 prompt cache</td></tr>
+  </table>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-05-25
+</p>
+
+</div>
+</body>
+</html>

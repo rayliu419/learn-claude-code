@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Hook 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+
+  .container { max-width:960px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; vertical-align:top; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  ul,ol { margin:4px 0 4px 20px; }
+  li { margin:2px 0; }
+
+  .arch-diagram {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:12px 16px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.6; white-space:pre; overflow-x:auto;
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>Claude Code Hook 系统</h1>
+  <div class="sub">生命周期驱动的插件框架 &mdash; 27 个 Hook 事件 &times; 4 种执行类型</div>
+</div>
+
+<div class="container">
+
+<!-- ==================== Summary ==================== -->
+<h2>Summary</h2>
+
+<p>Hook 系统是 Claude Code 的<strong>生命周期插件框架</strong>。它在 CLI 运行的各个关键节点触发用户/插件定义的钩子，允许外部代码介入、审核和增强 Claude Code 的行为。</p>
+
+<div class="card">
+  <p><strong>一句话定位：</strong>Hook 系统 = 可编程的中间件管道，在 Claude Code 生命周期的 27 个节点上并行执行用户配置的脚本/LLM 调用/HTTP 请求。</p>
+</div>
+
+<p>四种执行载体覆盖不同场景：</p>
+<ul>
+  <li><span class="badge badge-blue">command</span> Shell 脚本 —— 本地文件检查、git hooks、CI 触发</li>
+  <li><span class="badge badge-purple">prompt</span> LLM 单次调用 —— 快速语义验证（Haiku 默认）</li>
+  <li><span class="badge badge-green">agent</span> LLM 多轮代理 —— 复杂验证需要读写文件、运行命令</li>
+  <li><span class="badge badge-orange">http</span> HTTP POST —— 通知外部系统、对接企业审批流</li>
+</ul>
+
+<p>Hook 配置来源有清晰的优先级层级，通过 settings.json 的多层级合并 + 去重机制，保证策略可控、无重复执行。所有 hook <strong>并行执行</strong>，通过退出码/JSON 输出协议与 Claude Code 交互。</p>
+
+<!-- ==================== 1: What ==================== -->
+<h2>1. Hook 系统是做什么的？</h2>
+
+<p>Hook 系统让用户在 Claude Code 的关键生命周期节点插入自定义逻辑，实现：</p>
+
+<table>
+  <tr><th>能力</th><th>典型场景</th></tr>
+  <tr>
+    <td><strong>工具审核</strong></td>
+    <td>PreToolUse hook 在 Bash/Write 执行前检查命令安全性，阻止危险操作</td>
+  </tr>
+  <tr>
+    <td><strong>权限扩展</strong></td>
+    <td>PermissionRequest hook 实现自定义审批流程（如企业合规系统）</td>
+  </tr>
+  <tr>
+    <td><strong>上下文注入</strong></td>
+    <td>SessionStart hook 自动注入项目规范、动态 system prompt</td>
+  </tr>
+  <tr>
+    <td><strong>事后审计</strong></td>
+    <td>PostToolUse hook 记录所有文件编辑、命令执行到外部日志系统</td>
+  </tr>
+  <tr>
+    <td><strong>会话生命周期</strong></td>
+    <td>SessionEnd hook 清理临时文件、上报会话统计</td>
+  </tr>
+  <tr>
+    <td><strong>通知集成</strong></td>
+    <td>Notification hook 在任务完成/空闲时发送桌面通知或 Slack 消息</td>
+  </tr>
+  <tr>
+    <td><strong>文件监控</strong></td>
+    <td>FileChanged hook 监听外部文件变更并自动响应</td>
+  </tr>
+  <tr>
+    <td><strong>插件扩展</strong></td>
+    <td>WorktreeCreate/Remove hooks 让插件介入 VCS 工作树管理</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <p><strong>本质：</strong>Hook 是 Claude Code 的 "中间件" —— 在每个关键节点，所有匹配的 hook <strong>并行</strong>执行，结果按优先级规则合并，决定后续行为（允许/阻止/询问）。</p>
+</div>
+
+<!-- ==================== 2: Where ==================== -->
+<h2>2. 有哪些地方可以做 Hook？</h2>
+
+<p>Claude Code 定义了 <strong>27 个 Hook 事件</strong>，覆盖完整生命周期。每个事件有特定的匹配字段（matcher），允许精细化控制 hook 触发条件。</p>
+
+<h3>2.1 工具相关事件</h3>
+<table>
+  <tr><th>事件</th><th>触发时机</th><th>匹配字段</th><th>关键能力</th></tr>
+  <tr>
+    <td><code class="inline">PreToolUse</code></td>
+    <td>工具执行前</td>
+    <td><code class="inline">tool_name</code></td>
+    <td>可修改输入、阻止执行、决定权限</td>
+  </tr>
+  <tr>
+    <td><code class="inline">PostToolUse</code></td>
+    <td>工具执行成功后</td>
+    <td><code class="inline">tool_name</code></td>
+    <td>可修改 MCP 工具输出、注入附加上下文</td>
+  </tr>
+  <tr>
+    <td><code class="inline">PostToolUseFailure</code></td>
+    <td>工具执行失败后</td>
+    <td><code class="inline">tool_name</code></td>
+    <td>失败审计、自动重试信号</td>
+  </tr>
+  <tr>
+    <td><code class="inline">PermissionRequest</code></td>
+    <td>权限弹窗出现时</td>
+    <td><code class="inline">tool_name</code></td>
+    <td><span class="badge badge-green">核心</span> 自动批准/拒绝权限、修改权限规则</td>
+  </tr>
+  <tr>
+    <td><code class="inline">PermissionDenied</code></td>
+    <td>自动模式拒绝工具时</td>
+    <td><code class="inline">tool_name</code></td>
+    <td>可请求重试</td>
+  </tr>
+</table>
+
+<h3>2.2 会话生命周期事件</h3>
+<table>
+  <tr><th>事件</th><th>触发时机</th><th>匹配字段</th><th>关键能力</th></tr>
+  <tr>
+    <td><code class="inline">SessionStart</code></td>
+    <td>会话启动</td>
+    <td><code class="inline">source</code> (startup/resume/clear/compact)</td>
+    <td>注入初始消息、设置文件监控</td>
+  </tr>
+  <tr>
+    <td><code class="inline">SessionEnd</code></td>
+    <td>会话结束</td>
+    <td><code class="inline">reason</code> (clear/logout/...)</td>
+    <td>清理资源、上报统计（超时仅 1.5s）</td>
+  </tr>
+  <tr>
+    <td><code class="inline">Stop</code></td>
+    <td>模型本轮响应结束前</td>
+    <td>—</td>
+    <td>模型输出后置审核、补充反馈</td>
+  </tr>
+  <tr>
+    <td><code class="inline">StopFailure</code></td>
+    <td>API 错误导致回合结束</td>
+    <td><code class="inline">error</code> (rate_limit/auth/...)</td>
+    <td>错误分类处理</td>
+  </tr>
+  <tr>
+    <td><code class="inline">UserPromptSubmit</code></td>
+    <td>用户提交提示词时</td>
+    <td>—</td>
+    <td><span class="badge badge-green">核心</span> 阻止提交、注入上下文</td>
+  </tr>
+</table>
+
+<h3>2.3 子代理事件</h3>
+<table>
+  <tr><th>事件</th><th>触发时机</th><th>匹配字段</th></tr>
+  <tr><td><code class="inline">SubagentStart</code></td><td>子代理启动</td><td><code class="inline">agent_type</code></td></tr>
+  <tr><td><code class="inline">SubagentStop</code></td><td>子代理结束</td><td><code class="inline">agent_type</code></td></tr>
+</table>
+
+<h3>2.4 上下文管理事件</h3>
+<table>
+  <tr><th>事件</th><th>触发时机</th><th>匹配字段</th></tr>
+  <tr><td><code class="inline">PreCompact</code></td><td>对话压缩前</td><td><code class="inline">trigger</code> (manual/auto)</td></tr>
+  <tr><td><code class="inline">PostCompact</code></td><td>对话压缩后</td><td><code class="inline">trigger</code> (manual/auto)</td></tr>
+  <tr><td><code class="inline">InstructionsLoaded</code></td><td>CLAUDE.md/规则加载后</td><td><code class="inline">load_reason</code></td></tr>
+</table>
+
+<h3>2.5 其他事件</h3>
+<table>
+  <tr><th>事件</th><th>触发时机</th><th>匹配字段</th></tr>
+  <tr><td><code class="inline">Notification</code></td><td>通知发送时</td><td><code class="inline">notification_type</code></td></tr>
+  <tr><td><code class="inline">Setup</code></td><td>仓库初始化/维护</td><td><code class="inline">trigger</code> (init/maintenance)</td></tr>
+  <tr><td><code class="inline">TeammateIdle</code></td><td>队友代理空闲</td><td>—</td></tr>
+  <tr><td><code class="inline">TaskCreated</code></td><td>任务创建</td><td>—</td></tr>
+  <tr><td><code class="inline">TaskCompleted</code></td><td>任务完成</td><td>—</td></tr>
+  <tr><td><code class="inline">Elicitation</code></td><td>MCP 服务器请求用户输入</td><td><code class="inline">mcp_server_name</code></td></tr>
+  <tr><td><code class="inline">ElicitationResult</code></td><td>用户回应 elicitation</td><td><code class="inline">mcp_server_name</code></td></tr>
+  <tr><td><code class="inline">ConfigChange</code></td><td>配置在会话中变更</td><td><code class="inline">source</code></td></tr>
+  <tr><td><code class="inline">WorktreeCreate</code></td><td>创建工作树</td><td>—</td></tr>
+  <tr><td><code class="inline">WorktreeRemove</code></td><td>删除工作树</td><td>—</td></tr>
+  <tr><td><code class="inline">CwdChanged</code></td><td>工作目录变更</td><td>—</td></tr>
+  <tr><td><code class="inline">FileChanged</code></td><td>被监听的文件变更</td><td>文件名（basename）</td></tr>
+</table>
+
+<h3>2.2 Matcher 匹配规则</h3>
+
+<p>每个 HookMatcher 包含可选的 <code class="inline">matcher</code> 字段，决定哪些场景触发：</p>
+
+<table>
+  <tr><th>写法</th><th>含义</th><th>示例</th></tr>
+  <tr><td><strong>精确匹配</strong></td><td>完全等于</td><td><code class="inline">"Write"</code> 仅匹配 Write 工具</td></tr>
+  <tr><td><strong>管道符列表</strong></td><td>匹配任意一个</td><td><code class="inline">"Edit|Write"</code> 匹配 Edit 或 Write</td></tr>
+  <tr><td><strong>正则表达式</strong></td><td>按正则匹配</td><td><code class="inline">"Bash|Edit|Write"</code></td></tr>
+  <tr><td><strong>空 / 不设置</strong></td><td>匹配全部</td><td>对该事件的所有触发都执行</td></tr>
+</table>
+
+<p>额外过滤：<code class="inline">if</code> 字段支持权限规则语法做更精细的条件匹配，例如 <code class="inline">"if": "Bash(git *)"</code> 仅在 Bash 命令匹配 <code class="inline">git *</code> 时触发，避免不必要的进程启动。</p>
+
+<!-- ==================== 3: Built-in Hooks ==================== -->
+<h2>3. 内置了哪些 Hook？</h2>
+
+<p>Claude Code 内置了三类 hook，注册为 <code class="inline">internal: true</code> 的 callback hook，不展示给用户，不走用户 hook 的分析统计：</p>
+
+<h3>3.1 会话文件访问追踪 <span class="badge badge-blue">sessionFileAccessHooks</span></h3>
+
+<p>文件：<code class="inline">src/utils/sessionFileAccessHooks.ts</code>，在 CLI 初始化时注册。</p>
+
+<table>
+  <tr><th>Hook 事件</th><th>Matcher</th><th>作用</th></tr>
+  <tr><td><code class="inline">PostToolUse</code></td><td><code class="inline">Read</code></td><td>检测是否读取了会话文件（transcript/memory）</td></tr>
+  <tr><td><code class="inline">PostToolUse</code></td><td><code class="inline">Grep</code></td><td>检测是否搜索了会话文件内容</td></tr>
+  <tr><td><code class="inline">PostToolUse</code></td><td><code class="inline">Glob</code></td><td>检测是否列出了会话文件</td></tr>
+  <tr><td><code class="inline">PostToolUse</code></td><td><code class="inline">Edit</code></td><td>检测是否编辑了 memory 目录中的文件</td></tr>
+  <tr><td><code class="inline">PostToolUse</code></td><td><code class="inline">Write</code></td><td>检测是否写入了 memory 目录中的文件</td></tr>
+</table>
+
+<div class="card">
+  <p><strong>目的：</strong>纯分析用途。每次工具执行后检查访问的文件路径是否属于会话 transcript 或 memory 目录，上报分析事件以统计 memory 系统的使用模式。超时仅 1 秒，不影响正常流程。</p>
+</div>
+
+<h3>3.2 归因追踪 <span class="badge badge-purple">AttributionHooks</span></h3>
+
+<p>动态导入注册（<code class="inline">setup.ts</code> 第 355 行），用于跟踪代码建议的来源归属，支持版权/许可合规。</p>
+
+<h3>3.3 Post-Sampling 内部 Hooks <span class="badge badge-green">postSamplingHooks</span></h3>
+
+<p>文件：<code class="inline">src/utils/hooks/postSamplingHooks.ts</code>。内部 API，不暴露给 settings.json。在模型采样完成后执行，用于：</p>
+<ul>
+  <li>技能改进建议</li>
+  <li>Auto-dream（自动梦境生成）</li>
+  <li>Memory 提取</li>
+</ul>
+<p>所有错误仅记录日志，永不阻塞执行。</p>
+
+<!-- ==================== 4: Ordering & Conflict & Error ==================== -->
+<h2>4. 多个 Hook 的决策与异常处理</h2>
+
+<h3>4.1 配置来源优先级</h3>
+
+<p>Hook 配置从多个来源合并，决定哪些 hook 生效：</p>
+
+<div class="arch-diagram">优先级从高到低：
+
+  ┌──────────────────────┐
+  │ 1. policySettings    │ ← 管理员远程策略 / MDM，最高优先级
+  │    (managed-settings)│    allowManagedHooksOnly: true 时，仅此类 hook 运行
+  └──────────┬───────────┘
+  ┌──────────┴───────────┐
+  │ 2. userSettings      │ ← ~/.claude/settings.json
+  ├──────────────────────┤
+  │ 3. projectSettings   │ ← .claude/settings.json
+  ├──────────────────────┤
+  │ 4. localSettings     │ ← .claude/settings.local.json
+  ├──────────────────────┤
+  │ 5. flagSettings      │ ← --settings CLI 标志
+  └──────────┬───────────┘
+  ┌──────────┴───────────┐
+  │ 6. pluginHook        │ ← ~/.claude/plugins/*/hooks/hooks.json
+  ├──────────────────────┤
+  │ 7. sessionHook       │ ← 内存中的临时 hook（skill frontmatter 等）
+  ├──────────────────────┤
+  │ 8. builtinHook       │ ← 内置 callback（sessionFileAccess 等）
+  └──────────────────────┘</div>
+
+<h3>4.2 执行模型：并行而非串行</h3>
+
+<div class="callout">
+  <p><strong>核心结论：多个 hook 之间不存在先后顺序。</strong>所有匹配的 hook <strong>并行执行</strong>（<code class="inline">Promise.allSettled</code> 语义），各自独立运行。不存在 "先做哪个" 的执行顺序问题。</p>
+</div>
+
+<div class="flow">executeHooks() 流程：
+
+  getMatchingHooks()           ← 收集所有匹配的 hook
+       │
+       ▼
+  hookPromises = matchingHooks.map(...)  ← 每个 hook 包装为独立的 async generator
+       │
+       ▼
+  for await (result of all(hookPromises))  ← <strong>并行执行</strong>，逐个收集结果
+       │
+       ▼
+  aggregateResults()           ← 合并所有结果，按优先级规则决策</div>
+
+<p>唯一的 "快速路径" 优化：当所有 hook 都是 <code class="inline">internal: true</code> 的 callback 时，跳过 span/进度/取消信号，直接顺序批量执行（从 ~6μs 优化到 ~1.8μs）。</p>
+
+<h3>4.3 去重机制</h3>
+
+<p>多个配置来源可能包含相同的 hook，通过 <strong>hook 身份</strong> 去重避免重复执行：</p>
+
+<table>
+  <tr><th>Hook 类型</th><th>身份标识</th><th>去重行为</th></tr>
+  <tr>
+    <td><code class="inline">command</code></td>
+    <td><code class="inline">shell + command + if</code></td>
+    <td rowspan="4">相同来源上下文内的重复 hook，<strong>保留最后一个</strong>（<code class="inline">new Map()</code> 语义）。不同 plugin/skill 来源的 hook 不会互相去重（key 包含 pluginRoot/skillRoot 命名空间）。</td>
+  </tr>
+  <tr><td><code class="inline">prompt</code></td><td><code class="inline">prompt + if</code></td></tr>
+  <tr><td><code class="inline">agent</code></td><td><code class="inline">prompt + if</code></td></tr>
+  <tr><td><code class="inline">http</code></td><td><code class="inline">url + if</code></td></tr>
+  <tr>
+    <td><code class="inline">callback</code></td>
+    <td>不适用</td>
+    <td>不去重，每个 callback 唯一</td>
+  </tr>
+  <tr>
+    <td><code class="inline">function</code></td>
+    <td>不适用</td>
+    <td>不去重，每个 function 唯一</td>
+  </tr>
+</table>
+
+<h3>4.4 冲突解决：权限决策优先级</h3>
+
+<p>当多个 hook 对同一事件返回不同的权限决策时，采用<strong>最保守策略</strong>：</p>
+
+<div class="arch-diagram">权限决策合并优先级（从高到低）：
+
+  deny  >  ask  >  allow  >  passthrough
+
+  示例：
+  - Hook A 返回 allow, Hook B 返回 deny  → 最终 deny（最保守）
+  - Hook A 返回 ask,   Hook B 返回 allow → 最终 ask
+  - Hook A 返回 allow, Hook B 返回 allow → 最终 allow
+  - 所有 hook 都是 passthrough          → 走默认权限流程</div>
+
+<div class="callout callout-warn">
+  <p><strong>注意：</strong>Hook 的 <code class="inline">allow</code> 不会绕过 settings.json 的 deny/ask 规则。即使 hook 批准了，<code class="inline">checkRuleBasedPermissions</code> 仍然运行 —— deny 规则会覆盖 hook 的 allow 决策。</p>
+</div>
+
+<p>对于其他输出字段（additionalContext、watchPaths、updatedInput 等），多个 hook 的结果是<strong>叠加</strong>的 —— 每个 hook 产生的附加上下文都会被收集和传递。</p>
+
+<h3>4.5 异常处理</h3>
+
+<p>Hook 的异常处理通过<strong>退出码 + JSON 输出</strong>双层协议实现：</p>
+
+<table>
+  <tr><th>结果</th><th>退出码</th><th>JSON 输出</th><th>行为</th></tr>
+  <tr>
+    <td><span class="badge badge-green">成功</span></td>
+    <td>0</td>
+    <td><code class="inline">{"continue": true}</code> 或纯文本</td>
+    <td>正常继续执行</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-red">阻塞错误</span></td>
+    <td>2</td>
+    <td>—</td>
+    <td>停止当前操作，错误反馈给模型。如 PreToolUse 时阻止工具执行</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-orange">非阻塞错误</span></td>
+    <td>≠0, ≠2</td>
+    <td>—</td>
+    <td>仅向用户展示错误信息，不阻塞流程</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-red">超时</span></td>
+    <td>—</td>
+    <td>—</td>
+    <td>到达超时时间后发送 AbortSignal，hook 进程被终止</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-orange">JSON 校验失败</span></td>
+    <td>视为 1</td>
+    <td>格式不合法</td>
+    <td>非阻塞错误，stderr 包含校验失败详情</td>
+  </tr>
+  <tr>
+    <td><span class="badge badge-blue">异步模式</span></td>
+    <td>—</td>
+    <td><code class="inline">{"async": true}</code></td>
+    <td>Hook 在后台继续运行，结果稍后通过 <code class="inline">checkForAsyncHookResponses()</code> 轮询</td>
+  </tr>
+</table>
+
+<h4>超时设置</h4>
+<table>
+  <tr><th>范围</th><th>默认超时</th><th>可覆盖</th></tr>
+  <tr><td>通用 hook</td><td>600s (10分钟)</td><td>每个 hook 的 <code class="inline">timeout</code> 字段（秒）</td></tr>
+  <tr><td>SessionEnd hook</td><td>1.5s</td><td><code class="inline">CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS</code> 环境变量</td></tr>
+  <tr><td>Prompt hook</td><td>30s</td><td>每个 hook 的 <code class="inline">timeout</code> 字段</td></tr>
+  <tr><td>Agent hook</td><td>60s</td><td>每个 hook 的 <code class="inline">timeout</code> 字段（Agent 最高 50 轮）</td></tr>
+  <tr><td>HTTP hook</td><td>600s</td><td>每个 hook 的 <code class="inline">timeout</code> 字段</td></tr>
+  <tr><td>异步 hook</td><td>15s</td><td><code class="inline">asyncTimeout</code> 字段</td></tr>
+  <tr><td>Callback hook</td><td>继承通用超时</td><td>每个 hook 的 <code class="inline">timeout</code> 字段</td></tr>
+</table>
+
+<h4>安全保障</h4>
+
+<table>
+  <tr><th>机制</th><th>说明</th></tr>
+  <tr><td><strong>工作区信任</strong></td><td>交互模式下，所有 hook 需要工作区信任才能执行（防止 RCE）</td></tr>
+  <tr><td><code class="inline">disableAllHooks</code></td><td>管理员可全局禁用所有 hook（policySettings 级别最高）</td></tr>
+  <tr><td><code class="inline">allowManagedHooksOnly</code></td><td>仅允许管理员 hook 运行，用户/项目/本地 hook 全部忽略</td></tr>
+  <tr><td><code class="inline">CLAUDE_CODE_SIMPLE</code></td><td>简单模式下所有 hook 被跳过</td></tr>
+  <tr><td><code class="inline">--bare</code> 标志</td><td>裸模式跳过所有 hook</td></tr>
+  <tr><td>HTTP SSRF 防护</td><td>阻止 HTTP hook 访问私有/链路本地地址（10.x、192.168.x 等）</td></tr>
+  <tr><td><code class="inline">allowedHttpHookUrls</code></td><td>HTTP hook 的 URL 白名单，支持通配符</td></tr>
+  <tr><td>Header 变量白名单</td><td>HTTP header 中的环境变量插值仅允许 <code class="inline">allowedEnvVars</code> 里的变量</td></tr>
+  <tr><td>CRLF 防护</td><td>HTTP header 值清理，防止注入攻击</td></tr>
+  <tr><td>SessionStart/Setup 限制</td><td>这两个事件禁止 HTTP hook（防止 headless 模式死锁）</td></tr>
+</table>
+
+<h4>REPL 内 vs REPL 外执行</h4>
+
+<p>存在两套执行路径：</p>
+<ul>
+  <li><strong><code class="inline">executeHooks()</code>（REPL 内）：</strong>产生异步生成器消息，暴露给模型作为 system message。用于 PreToolUse、Stop、UserPromptSubmit 等需要影响模型行为的场景。</li>
+  <li><strong><code class="inline">executeHooksOutsideREPL()</code>（REPL 外）：</strong>即发即忘式日志，错误仅通过 <code class="inline">logForDebugging</code> 记录。用于 Notification、SessionEnd、Worktree 等不需要影响模型行为的场景。</li>
+</ul>
+
+<!-- ==================== 5: Configuration ==================== -->
+<h2>5. Hook 配置写法</h2>
+
+<h3>5.1 四种 Hook 类型的配置</h3>
+
+<h4>Command Hook</h4>
+<pre><code>{
+  "type": "command",
+  "command": "path/to/check.sh",    // 必填：shell 命令
+  "shell": "bash",                   // 可选：bash 或 powershell
+  "timeout": 30,                     // 可选：秒
+  "statusMessage": "检查中...",      // 可选：自定义进度文字
+  "if": "Bash(git *)",               // 可选：权限规则语法过滤器
+  "once": true,                      // 可选：执行一次后移除
+  "async": true,                     // 可选：后台执行
+  "asyncRewake": true                // 可选：后台执行，exit 2 时唤醒模型
+}</code></pre>
+
+<h4>Prompt Hook</h4>
+<pre><code>{
+  "type": "prompt",
+  "prompt": "检查这个命令是否安全: $ARGUMENTS",  // 必填，$ARGUMENTS 为输入占位符
+  "model": "claude-sonnet-4-6",                  // 可选，默认 haiku
+  "timeout": 30,                                  // 可选：秒，默认 30
+  "if": "Bash(git *)",
+  "once": true
+}</code></pre>
+
+<h4>Agent Hook</h4>
+<pre><code>{
+  "type": "agent",
+  "prompt": "验证代码变更是否安全: $ARGUMENTS",  // 必填
+  "model": "claude-sonnet-4-6",                   // 可选，默认 haiku
+  "timeout": 60,                                   // 可选：秒，默认 60
+  "if": "Bash(git *)"
+}</code></pre>
+
+<h4>HTTP Hook</h4>
+<pre><code>{
+  "type": "http",
+  "url": "https://api.example.com/hook",   // 必填
+  "headers": { "Authorization": "Bearer $API_TOKEN" },  // 可选，支持环境变量插值
+  "allowedEnvVars": ["API_TOKEN"],          // 可选：header 中允许的 env var 白名单
+  "timeout": 10                             // 可选：秒，默认 600
+}</code></pre>
+
+<h3>5.2 完整配置示例</h3>
+
+<pre><code>// .claude/settings.json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.claude/hooks/security-check.sh" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "prompt", "prompt": "此命令是否安全？$ARGUMENTS", "if": "Bash(git push *)" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "echo '文件已变更' | terminal-notifier -title 'Claude Code'" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          { "type": "prompt", "prompt": "根据 $ARGUMENTS 生成初始消息" }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+
+<!-- ==================== 6: JSON Output Protocol ==================== -->
+<h2>6. Hook JSON 输出协议</h2>
+
+<p>Hook（command/http/prompt/agent）可以通过 stdout 返回 JSON 来控制 Claude Code 的行为：</p>
+
+<table>
+  <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+  <tr><td><code class="inline">continue</code></td><td>boolean</td><td>是否继续执行（默认 true）</td></tr>
+  <tr><td><code class="inline">stopReason</code></td><td>string</td><td>当 continue=false 时，展示给用户的原因</td></tr>
+  <tr><td><code class="inline">suppressOutput</code></td><td>boolean</td><td>是否隐藏 stdout 输出</td></tr>
+  <tr><td><code class="inline">decision</code></td><td>"approve" | "block"</td><td>工具审批决策</td></tr>
+  <tr><td><code class="inline">systemMessage</code></td><td>string</td><td>展示给用户的系统警告消息</td></tr>
+  <tr><td><code class="inline">hookSpecificOutput</code></td><td>object</td><td>事件特定输出（见下表）</td></tr>
+  <tr><td><code class="inline">async</code></td><td>boolean</td><td>设为 true 时异步执行，结果稍后轮询</td></tr>
+  <tr><td><code class="inline">asyncTimeout</code></td><td>number</td><td>异步执行超时（毫秒），默认 15000</td></tr>
+</table>
+
+<h4>事件特定输出（hookSpecificOutput）</h4>
+<table>
+  <tr><th>适用事件</th><th>字段</th><th>说明</th></tr>
+  <tr><td>PreToolUse</td><td><code class="inline">permissionDecision</code></td><td>allow / deny / ask</td></tr>
+  <tr><td>PreToolUse</td><td><code class="inline">updatedInput</code></td><td>修改后的工具输入参数</td></tr>
+  <tr><td>PreToolUse / PostToolUse / SessionStart</td><td><code class="inline">additionalContext</code></td><td>注入给模型的附加上下文</td></tr>
+  <tr><td>PostToolUse</td><td><code class="inline">updatedMCPToolOutput</code></td><td>替换 MCP 工具输出</td></tr>
+  <tr><td>SessionStart</td><td><code class="inline">initialUserMessage</code></td><td>初始用户消息（如从会话恢复时注入）</td></tr>
+  <tr><td>SessionStart / CwdChanged / FileChanged</td><td><code class="inline">watchPaths</code></td><td>要监控的文件路径列表</td></tr>
+  <tr><td>PermissionRequest</td><td><code class="inline">decision</code></td><td>allow / deny（可附带 updatedPermissions）</td></tr>
+  <tr><td>PermissionDenied</td><td><code class="inline">retry</code></td><td>是否重试</td></tr>
+  <tr><td>Elicitation / ElicitationResult</td><td><code class="inline">action</code></td><td>accept / decline / cancel</td></tr>
+  <tr><td>WorktreeCreate</td><td><code class="inline">worktreePath</code></td><td>工作树路径</td></tr>
+</table>
+
+<!-- ==================== 7: Architecture ==================== -->
+<h2>7. 架构总览</h2>
+
+<div class="arch-diagram">                        ┌──────────────────────────────┐
+                        │     settings.json 合并层     │
+                        │  policy > user > project     │
+                        │  > local > flag > plugin     │
+                        │   > session > builtin        │
+                        └─────────────┬────────────────┘
+                                      │
+                        ┌─────────────▼────────────────┐
+                        │   captureHooksConfigSnapshot  │
+                        │   applyManagedOnly policy     │
+                        │   applyStrictPluginOnly       │
+                        └─────────────┬────────────────┘
+                                      │
+  ┌───────────────────────────────────┼───────────────────────────────────┐
+  │                        executeHooks() Core                            │
+  │                                                                       │
+  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌───────┐ │
+  │  │ execCommand   │   │ execPrompt   │   │ execAgent    │   │execHttp│ │
+  │  │ Hook()        │   │ Hook()       │   │ Hook()       │   │Hook() │ │
+  │  │ shell spawn   │   │ LLM (haiku)  │   │ LLM multi-   │   │axios  │ │
+  │  │ exit code 0/2 │   │ JSON output  │   │ turn agent   │   │POST   │ │
+  │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘   └───┬───┘ │
+  │         │                  │                   │               │      │
+  │         └──────────────────┼───────────────────┼───────────────┘      │
+  │                            │                   │                      │
+  │                   ┌────────▼──────────┐        │                      │
+  │                   │  hookCallback()   │        │                      │
+  │                   │  (TypeScript)     │        │                      │
+  │                   └────────┬──────────┘        │                      │
+  │                            │                   │                      │
+  │                   ┌────────▼──────────┐        │                      │
+  │                   │  functionHook()   │        │                      │
+  │                   │  (session-scoped) │        │                      │
+  │                   └────────┬──────────┘        │                      │
+  │                            │                   │                      │
+  │         ┌──────────────────┴───────────────────┴──────────────┐       │
+  │         │               all() 并行收集                         │       │
+  │         │  Promise.allSettled 语义，逐个 yield 结果             │       │
+  │         └──────────────────────┬──────────────────────────────┘       │
+  │                                │                                      │
+  │         ┌──────────────────────▼──────────────────────────────┐       │
+  │         │          结果聚合 & 冲突解决                          │       │
+  │         │  permission: deny > ask > allow > passthrough        │       │
+  │         │  context:    叠加所有 additionalContext              │       │
+  │         │  blocking:   收集所有 blockingError                  │       │
+  │         └──────────────────────┬──────────────────────────────┘       │
+  │                                │                                      │
+  └────────────────────────────────┼──────────────────────────────────────┘
+                                   │
+                        ┌──────────▼─────────┐
+                        │  调用方（toolHook,  │
+                        │  stopHook, session, │
+                        │  notification ...） │
+                        └────────────────────┘</div>
+
+<!-- ==================== 8: Files ==================== -->
+<h2>8. 关键文件索引</h2>
+
+<table>
+  <tr><th>文件</th><th>角色</th><th>规模</th></tr>
+  <tr><td><code class="inline">src/utils/hooks.ts</code></td><td>核心执行引擎，所有 execute*Hook 函数</td><td>~5000 行</td></tr>
+  <tr><td><code class="inline">src/schemas/hooks.ts</code></td><td>Hook 配置的 Zod schema（4 种类型 + matcher）</td><td>~220 行</td></tr>
+  <tr><td><code class="inline">src/types/hooks.ts</code></td><td>Hook JSON 输出协议、HookResult、HookCallback 类型</td><td>~230 行</td></tr>
+  <tr><td><code class="inline">src/entrypoints/sdk/coreTypes.ts</code></td><td>27 个 HOOK_EVENTS 定义</td><td>~55 行</td></tr>
+  <tr><td><code class="inline">src/services/tools/toolHooks.ts</code></td><td>PreToolUse/PostToolUse hook 执行 + 权限决策融合</td><td>~650 行</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/hooksConfigSnapshot.ts</code></td><td>配置快照 + 管理策略检查</td><td>~134 行</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/hooksSettings.ts</code></td><td>Hook 来源优先级、展示文本、排序</td><td>~272 行</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/execCommandHook.ts</code></td><td>Shell 命令执行（内嵌于 hooks.ts）</td><td>—</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/execPromptHook.ts</code></td><td>LLM prompt hook 执行器</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/execAgentHook.ts</code></td><td>LLM agent hook 执行器（多轮）</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/execHttpHook.ts</code></td><td>HTTP hook 执行器 + SSRF 防护</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/AsyncHookRegistry.ts</code></td><td>异步 hook 响应轮询注册表</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/sessionHooks.ts</code></td><td>会话级内存 hook（add/remove/clear）</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/postSamplingHooks.ts</code></td><td>Post-sampling 内部 hook 注册表</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/hookEvents.ts</code></td><td>Hook 事件广播系统（SDK 集成）</td><td>单文件</td></tr>
+  <tr><td><code class="inline">src/utils/sessionFileAccessHooks.ts</code></td><td>内置：会话文件访问分析 hook</td><td>~250 行</td></tr>
+  <tr><td><code class="inline">src/utils/hooks/fileChangedWatcher.ts</code></td><td>CwdChanged/FileChanged 文件监控</td><td>单文件</td></tr>
+</table>
+
+<!-- ==================== Conclusion ==================== -->
+<h2>Conclusion</h2>
+
+<p>回顾开篇的四个问题：</p>
+
+<div class="card">
+  <p><strong>1. Hook 系统做什么？</strong> 一个生命周期驱动的可编程中间件框架。在 27 个关键节点并行执行 4 种类型的钩子（command/prompt/agent/http），让外部系统介入、审计和增强 Claude Code 的行为。</p>
+</div>
+
+<div class="card">
+  <p><strong>2. 哪些地方能做 hook？</strong> 27 个事件覆盖完整生命周期 —— 工具执行前后（PreToolUse / PostToolUse / PostToolUseFailure）、会话起止（SessionStart / SessionEnd）、权限决策（PermissionRequest / PermissionDenied）、上下文管理（PreCompact / PostCompact）、子代理（SubagentStart / Stop）、通知、任务、文件监控、工作树管理等。</p>
+</div>
+
+<div class="card">
+  <p><strong>3. 内置了什么 hook？</strong> 三类：<strong>会话文件访问追踪</strong>（Read/Grep/Glob/Edit/Write 后检测是否访问了 transcript/memory 文件）、<strong>归因追踪</strong>（代码建议的版权归属）、<strong>Post-sampling 内部 hooks</strong>（技能改进、auto-dream、memory 提取）。全部标记为 <code class="inline">internal: true</code>，对用户透明。</p>
+</div>
+
+<div class="card">
+  <p><strong>4. 多个 hook 如何决策？</strong> <strong>并行执行，不存在先后顺序。</strong>去重依靠 hook 身份标识（command+shell+if 等），相同来源上下文中重复的 hook 保留最后一个。权限冲突采用 <strong>deny > ask > allow > passthrough</strong> 的最保守策略，hook 的 allow 不会绕过 settings.json 的 deny 规则。异常通过退出码协议处理（0=成功, 2=阻塞, 其他=非阻塞），超时可精细配置（SessionEnd 仅 1.5s，通用 10min）。</p>
+</div>
+
+<p style="margin-top:16px; color:var(--text-dim); font-size:0.85em;">基于 Claude Code 源码分析生成 &mdash; 核心文件 ~40 个，核心逻辑 ~5000 行（src/utils/hooks.ts）</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Subagent 系统深度分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-muted: #6b8a75;
+    --accent: #2d8a4e;
+    --accent2: #3fb950;
+    --accent3: #6b4e9e;
+    --warn: #b8860b;
+    --danger: #c0392b;
+    --code-bg: #eaf5ef;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size:13px; line-height:1.45;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px;
+  }
+  h1 { font-size:1.35em; font-weight:700; border-bottom: 2px solid var(--border); padding-bottom: 12px; margin-bottom: 8px; }
+  h2 { font-size:1.2em; margin:24px 0 8px; padding-bottom:4px; color: var(--accent); border-bottom: 1px solid var(--border); }
+  h3 { font-size:1.02em; margin:16px 0 6px; color: var(--accent3); }
+  h4 { font-size:0.95em; margin:10px 0 4px; color: var(--warn); }
+  p { margin:6px 0; }
+  li { margin:2px 0; }
+  ul, ol { padding-left: 24px; margin-bottom: 8px; }
+  code {
+    font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, monospace;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size:0.88em;
+    border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin-bottom: 16px;
+    font-size:0.8em;
+    line-height: 1.55;
+  }
+  pre code { background:none; padding:0; border:none; }
+  .muted { color: var(--text-muted); font-size:0.85em; }
+  .note {
+    background: #e3f0e8;
+    border-left: 4px solid var(--accent);
+    padding: 10px 14px;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 8px;
+  }
+  .warn-box {
+    background: #faf3e0;
+    border-left: 4px solid var(--warn);
+    padding: 10px 14px;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 8px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin:8px 0;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    text-align: left;
+    font-size:0.9em;
+  }
+  th { background: var(--surface); font-weight: 600; }
+  tr:nth-child(even) { background: rgba(0,0,0,0.03); }
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    font-weight: 600;
+  }
+  .tag-builtin { background: #d4edda; color: #1a6e30; }
+  .tag-plugin { background: #e8ddf5; color: #5c3d8f; }
+  .tag-custom { background: #d6e9f8; color: #1a5c8a; }
+  .tag-readonly { background: #fdf0d5; color: #8a5c10; }
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 18px 24px; margin-bottom: 32px; }
+  .toc ol { margin-bottom: 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+  .flow-step {
+    display: flex; gap: 12px; margin-bottom: 10px; align-items: flex-start;
+  }
+  .flow-num {
+    flex-shrink: 0;
+    width: 28px; height: 28px;
+    background: var(--accent); color: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.85em;
+  }
+</style>
+</head>
+<body>
+
+<h1>Claude Code Subagent 系统深度分析</h1>
+<p class="muted">基于仓库源码 <code>src/tools/AgentTool/</code> 及相关模块的完整分析 &nbsp;|&nbsp; 2026-05-28</p>
+
+<div class="toc">
+<strong>目录</strong>
+<ol>
+  <li><a href="#q1">Subagent 的调用触发机制</a></li>
+  <li><a href="#q2">内置 Subagent 与插件扩展</a></li>
+  <li><a href="#q3">系统提示词与工具差异</a></li>
+  <li><a href="#q4">多 Agent 协调与管理机制</a></li>
+  <li><a href="#appendix">附录：关键源码文件索引</a></li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="q1">1. Subagent 的调用触发机制</h2>
+
+<h3>核心结论：模型自主决策，工具描述驱动</h3>
+
+<p>Subagent 的调用<strong>不是硬编码规则</strong>，而是通过 <strong>模型推理 + 工具描述引导</strong> 实现的。Agent 工具和其他工具（Bash、Read、Write 等）一样，注册在工具列表中提供给主模型，模型根据当前任务自行判断是否需要委托给 subagent。</p>
+
+<h3>触发链路</h3>
+
+<div class="flow-step"><div class="flow-num">1</div><div><strong>工具注册</strong>：<code>AgentTool</code> 通过 <code>buildTool()</code> 注册为名为 <code>"Agent"</code> 的工具，包含 input schema、output schema、description 和 prompt（工具描述）</div></div>
+<div class="flow-step"><div class="flow-num">2</div><div><strong>工具描述生成</strong>：<code>prompt.ts:getPrompt()</code> 动态生成完整的工具描述文本，包括：可用 agent 类型列表（名称 + 能做什么 + 拥有哪些工具）、使用指南（何时用/何时不用）、示例用法、fork subagent 语义（如果 feature gate 开启）</div></div>
+<div class="flow-step"><div class="flow-num">3</div><div><strong>模型决策</strong>：主模型在 thinking 阶段分析用户请求，根据工具描述中的 <code>whenToUse</code> 指引和自身判断，决定是否调用 <code>Agent</code> 工具</div></div>
+<div class="flow-step"><div class="flow-num">4</div><div><strong>参数填写</strong>：模型选择 <code>subagent_type</code>（指定 agent 类型）、填写 <code>description</code> 和 <code>prompt</code>、可选设置 <code>model</code> 覆盖和 <code>run_in_background</code></div></div>
+<div class="flow-step"><div class="flow-num">5</div><div><strong>执行入口</strong>：<code>AgentTool.call()</code> 接收参数，路由到对应执行路径（fork / normal / swarm / remote）</div></div>
+
+<h3>关键代码位置</h3>
+<ul>
+  <li><code>src/tools/AgentTool/AgentTool.tsx:196-238</code> — 工具注册，<code>prompt()</code> 方法生成工具描述</li>
+  <li><code>src/tools/AgentTool/prompt.ts</code> — 完整的 prompt 生成逻辑，包含 agent 列表、使用指南、示例</li>
+  <li><code>src/tools/AgentTool/constants.ts</code> — <code>AGENT_TOOL_NAME = 'Agent'</code></li>
+</ul>
+
+<div class="note">
+<strong>设计要点</strong>：工具描述中的 <code>whenToUse</code> 字段不是程序化过滤规则，而是给模型的自然语言指引。例如 Explore agent 的 whenToUse 描述它适合 "快速搜索代码库"，模型阅读后自主判断当前场景是否匹配。
+</div>
+
+<!-- ============================================================ -->
+<h2 id="q2">2. 内置 Subagent 与插件扩展</h2>
+
+<h3>2.1 内置 Agent 清单</h3>
+
+<table>
+<tr><th>Agent 类型</th><th>来源文件</th><th>用途</th><th>模型</th><th>工具策略</th></tr>
+<tr>
+  <td><code>general-purpose</code></td>
+  <td><code>built-in/generalPurposeAgent.ts</code></td>
+  <td>通用任务：代码搜索、多步研究、复杂问题调查</td>
+  <td>inherit（默认）</td>
+  <td><code>['*']</code> — 全部工具</td>
+</tr>
+<tr>
+  <td><code>Explore</code></td>
+  <td><code>built-in/exploreAgent.ts</code></td>
+  <td>快速只读代码探索，支持 "quick/medium/very thorough" 三种深度</td>
+  <td>haiku（外部）/ inherit（内部）</td>
+  <td>黑名单排除 Edit/Write/NotebookEdit/Agent/ExitPlanMode</td>
+</tr>
+<tr>
+  <td><code>Plan</code></td>
+  <td><code>built-in/planAgent.ts</code></td>
+  <td>软件架构规划：探索代码库 + 设计实现方案</td>
+  <td>inherit</td>
+  <td>同 Explore（只读）</td>
+</tr>
+<tr>
+  <td><code>claude-code-guide</code></td>
+  <td><code>built-in/claudeCodeGuideAgent.ts</code></td>
+  <td>回答 Claude Code CLI / Agent SDK / Claude API 相关问题，抓取官方文档</td>
+  <td>haiku</td>
+  <td>Read + Glob/Grep + WebFetch + WebSearch</td>
+</tr>
+<tr>
+  <td><code>statusline-setup</code></td>
+  <td><code>built-in/statuslineSetup.ts</code></td>
+  <td>配置终端状态栏（从 shell PS1 转换或自定义）</td>
+  <td>sonnet</td>
+  <td>Read + Edit 仅</td>
+</tr>
+<tr>
+  <td><code>verification</code></td>
+  <td><code>built-in/verificationAgent.ts</code></td>
+  <td>验证实现正确性（feature gate 控制），运行测试、构建、lint，输出 PASS/FAIL/PARTIAL 判定</td>
+  <td>inherit</td>
+  <td>黑名单排除 Edit/Write/NotebookEdit/Agent/ExitPlanMode</td>
+</tr>
+</table>
+
+<h3>2.2 Agent 的注册来源</h3>
+
+<p><code>getAgentDefinitionsWithOverrides()</code> 从三个来源加载 agent：</p>
+
+<table>
+<tr><th>来源</th><th>source 标识</th><th>加载方式</th><th>优先级</th></tr>
+<tr>
+  <td><strong>Built-in</strong></td>
+  <td><code>'built-in'</code></td>
+  <td><code>getBuiltInAgents()</code> 硬编码 + feature gate 控制</td>
+  <td>最低（可被覆盖）</td>
+</tr>
+<tr>
+  <td><strong>Plugin</strong></td>
+  <td><code>'plugin'</code></td>
+  <td><code>loadPluginAgents()</code> 从已启用插件的 <code>agents/</code> 目录加载 .md 文件</td>
+  <td>中</td>
+</tr>
+<tr>
+  <td><strong>Custom (User)</strong></td>
+  <td><code>'userSettings'</code></td>
+  <td><code>~/.claude/agents/*.md</code> 或 settings.json 的 agents 字段</td>
+  <td>高</td>
+</tr>
+<tr>
+  <td><strong>Custom (Project)</strong></td>
+  <td><code>'projectSettings'</code></td>
+  <td><code>.claude/agents/*.md</code></td>
+  <td>高</td>
+</tr>
+<tr>
+  <td><strong>Managed (Policy)</strong></td>
+  <td><code>'policySettings'</code></td>
+  <td>MDM / 远程托管策略推送</td>
+  <td>最高</td>
+</tr>
+</table>
+
+<div class="note">
+<strong>覆盖规则</strong>：<code>getActiveAgentsFromList()</code> 按 built-in → plugin → user → project → managed 的顺序处理，同名 agent 后者覆盖前者。这允许用户和项目用自定义 agent 覆盖内置 agent。
+</div>
+
+<h3>2.3 插件如何添加 Subagent</h3>
+
+<p>插件通过在 <code>agents/</code> 目录放置 Markdown 文件来定义 agent：</p>
+
+<pre><code>---
+name: my-agent
+description: Does X when Y happens
+tools:
+  - Read
+  - Bash
+  - Grep
+model: haiku
+color: blue
+memory: project
+---
+
+You are a specialized agent that helps with...
+
+## Your Process
+1. ...
+2. ...
+
+## Guidelines
+- ...</code></pre>
+
+<p>关键机制（<code>loadPluginAgents.ts</code>）：</p>
+<ul>
+  <li>通过 <code>walkPluginMarkdown()</code> 遍历插件目录中的 .md 文件</li>
+  <li>agent 名称自动加插件命名空间前缀：<code>pluginName:agentName</code></li>
+  <li>支持 frontmatter 配置：<code>tools</code>, <code>model</code>, <code>color</code>, <code>memory</code>, <code>background</code>, <code>isolation</code>, <code>maxTurns</code>, <code>skills</code></li>
+  <li>系统提示词支持 <code>${CLAUDE_PLUGIN_ROOT}</code> 变量替换</li>
+  <li><strong>安全限制</strong>：插件 agent 的 <code>permissionMode</code>, <code>hooks</code>, <code>mcpServers</code> frontmatter 被忽略（防止插件越权）</li>
+  <li>支持 memory scope（user/project/local），自动注入 Read/Write/Edit 工具</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="q3">3. 系统提示词与工具差异</h2>
+
+<h3>3.1 系统提示词生成</h3>
+
+<p>每个 agent 都有独立的系统提示词，生成方式因来源不同而异：</p>
+
+<table>
+<tr><th>Agent 类型</th><th>提示词来源</th><th>生成机制</th></tr>
+<tr>
+  <td>Built-in</td>
+  <td><code>getSystemPrompt({ toolUseContext })</code></td>
+  <td>函数动态生成，可访问当前工具上下文（如 claude-code-guide 读取自定义 agent/skill/MCP 列表）</td>
+</tr>
+<tr>
+  <td>Custom (Markdown)</td>
+  <td>Markdown 内容正文</td>
+  <td>frontmatter 之后的 Markdown 正文直接作为系统提示词</td>
+</tr>
+<tr>
+  <td>Plugin</td>
+  <td>插件目录中 .md 文件正文</td>
+  <td>同 Custom，但支持 <code>${CLAUDE_PLUGIN_ROOT}</code> 变量替换</td>
+</tr>
+<tr>
+  <td>Custom (JSON)</td>
+  <td><code>prompt</code> 字段</td>
+  <td>settings.json 中 agents 对象的 prompt 字段</td>
+</tr>
+</table>
+
+<p>所有 agent 的系统提示词都会经过 <code>enhanceSystemPromptWithEnvDetails()</code> 处理，追加：</p>
+<ul>
+  <li>工作目录信息（绝对路径）</li>
+  <li>可用工具列表及其使用提示</li>
+  <li>模型信息</li>
+  <li>emoji 使用指引</li>
+</ul>
+
+<h3>3.2 工具过滤机制</h3>
+
+<p><code>filterToolsForAgent()</code> 对 subagent 的工具集进行多层过滤：</p>
+
+<h4>第一层：全局禁止（ALL_AGENT_DISALLOWED_TOOLS）</h4>
+<p>所有 subagent 都禁止的工具：</p>
+<ul>
+  <li><code>TaskOutput</code> — 查看其他任务输出</li>
+  <li><code>ExitPlanMode</code> / <code>EnterPlanMode</code> — plan mode 切换</li>
+  <li><code>AskUserQuestion</code> — 向用户提问（subagent 不能直接交互）</li>
+  <li><code>TaskStop</code> — 停止其他任务</li>
+  <li><code>Agent</code>（外部用户）— 防止嵌套 subagent（内部 ant 用户除外）</li>
+</ul>
+
+<h4>第二层：自定义 Agent 额外禁止</h4>
+<p><code>CUSTOM_AGENT_DISALLOWED_TOOLS</code> 在全局禁止基础上扩展。</p>
+
+<h4>第三层：异步 Agent 允许列表</h4>
+<p><code>ASYNC_AGENT_ALLOWED_TOOLS</code> 是白名单——异步 subagent 只能使用这些工具：Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, Skill, TodoWrite, NotebookEdit 等。不支持 Agent（嵌套）、AskUserQuestion、计划模式工具等交互式功能。</p>
+
+<h4>第四层：Agent 自身的 disallowedTools</h4>
+<p>每个 agent 定义可以声明 <code>disallowedTools</code>，如 Explore agent 明确禁止 Edit/Write/NotebookEdit。</p>
+
+<div class="note">
+<strong>MCP 工具例外</strong>：所有以 <code>mcp__</code> 开头的工具在过滤中始终放行，不受上述限制。
+</div>
+
+<h3>3.3 Agent 的 Model 选择</h3>
+
+<p><code>getAgentModel()</code> 实现分层 model 解析：</p>
+
+<ol>
+  <li>环境变量 <code>CLAUDE_CODE_SUBAGENT_MODEL</code> 全局覆盖</li>
+  <li>工具调用时的 <code>model</code> 参数（用户显式指定）</li>
+  <li>Agent 定义中的 <code>model</code> 字段</li>
+  <li>默认值 <code>'inherit'</code>（继承主 agent 的模型）</li>
+</ol>
+
+<p>特殊逻辑：如果 agent model 是 bare alias（opus/sonnet/haiku），且父 agent 也是同一 tier，则直接复用父 agent 的精确 model string，避免跨平台降级。</p>
+
+<!-- ============================================================ -->
+<h2 id="q4">4. 多 Agent 协调与管理机制</h2>
+
+<h3>4.1 整体架构</h3>
+
+<p>Subagent 的协调不是传统的 "前端/后端" 分离模式，而是以下执行模式的组合：</p>
+
+<table>
+<tr><th>模式</th><th>执行方式</th><th>UI 交互</th><th>适用场景</th></tr>
+<tr>
+  <td><strong>同步 (Foreground)</strong></td>
+  <td>主 agent 等待 subagent 完成</td>
+  <td>可显示权限提示</td>
+  <td>需要结果才能继续的任务</td>
+</tr>
+<tr>
+  <td><strong>异步 (Background)</strong></td>
+  <td>主 agent 启动后立即返回</td>
+  <td>不可显示 UI，通过 <code>&lt;task-notification&gt;</code> 通知</td>
+  <td>独立并行任务</td>
+</tr>
+<tr>
+  <td><strong>Fork</strong></td>
+  <td>子 agent 继承完整对话上下文</td>
+  <td>同异步，共享 prompt cache</td>
+  <td>不希望中间输出进入主上下文的场景</td>
+</tr>
+<tr>
+  <td><strong>Coordinator Mode</strong></td>
+  <td>专门的协调器 + worker 池</td>
+  <td>所有 worker 都是异步的</td>
+  <td>多 worker 并行研究与实现</td>
+</tr>
+<tr>
+  <td><strong>Swarm (Teammate)</strong></td>
+  <td>多个 agent 组成 team，通过 tmux/iTerm2 分屏</td>
+  <td>每个 teammate 有独立终端面板</td>
+  <td>复杂多角色协作</td>
+</tr>
+</table>
+
+<h3>4.2 执行流程详解</h3>
+
+<h4>AgentTool.call() — 路由入口</h4>
+<pre><code>AgentTool.call({ prompt, subagent_type, ... }, toolUseContext)
+  │
+  ├─ team_name + name 存在？
+  │   └─ YES → spawnTeammate()    // Swarm 模式：启动 teammate
+  │
+  ├─ subagent_type 为空 + fork gate 开启？
+  │   └─ YES → FORK_AGENT 路径    // Fork 模式：继承上下文
+  │
+  ├─ isolation === 'remote'？
+  │   └─ YES → teleportToRemote()  // 远程隔离（ant-only）
+  │
+  ├─ shouldRunAsync？
+  │   └─ YES → registerAsyncAgent() → runAsyncAgentLifecycle()
+  │
+  └─ NO → runAgent() 同步执行     // 标准同步 subagent
+</code></pre>
+
+<h4>runAgent() — 核心执行引擎</h4>
+<p>这是所有 subagent 执行的统一入口。关键步骤：</p>
+
+<ol>
+  <li><strong>Model 解析</strong>：<code>getAgentModel()</code> 确定最终使用的模型</li>
+  <li><strong>Context 隔离</strong>：<code>createSubagentContext()</code> 创建独立的 ToolUseContext
+    <ul>
+      <li>克隆 readFileState（文件读取缓存）</li>
+      <li>创建独立的 abortController（异步 agent 完全独立，同步 agent 链接到父级）</li>
+      <li>setAppState 可能为 no-op（异步 agent 不能修改父级 UI 状态）</li>
+      <li>嵌套 depth 递增（用于追踪调用链）</li>
+    </ul>
+  </li>
+  <li><strong>权限模式</strong>：agent 定义可覆盖权限模式（如 <code>dontAsk</code>），但 <code>bypassPermissions</code> 和 <code>acceptEdits</code> 始终不被覆盖</li>
+  <li><strong>工具解析</strong>：<code>resolveAgentTools()</code> 根据 agent 的 tools/disallowedTools 定义过滤可用工具集</li>
+  <li><strong>MCP 初始化</strong>：<code>initializeAgentMcpServers()</code> 连接 agent 专属的 MCP 服务器（与父级共享 + 内联定义的专属服务器）</li>
+  <li><strong>Hook 注册</strong>：执行 <code>SubagentStart</code> hooks，注册 agent 的 frontmatter hooks</li>
+  <li><strong>Skill 预加载</strong>：agent 定义中的 skills 列表被预加载到初始消息中</li>
+  <li><strong>Query 循环</strong>：通过 <code>query()</code> 运行标准的 agentic loop（与主 agent 相同的 query 引擎）</li>
+  <li><strong>Transcript 记录</strong>：每条消息通过 <code>recordSidechainTranscript()</code> 持久化</li>
+  <li><strong>清理</strong>（finally 块）：MCP 连接、session hooks、文件缓存、bash 后台任务、todos 条目</li>
+</ol>
+
+<h3>4.3 Subagent 生命周期管理</h3>
+
+<h4>Task 系统</h4>
+<p>异步 agent 通过 <code>LocalAgentTask</code> 注册到全局任务系统：</p>
+<ul>
+  <li><strong>注册</strong>：<code>registerAsyncAgent()</code> 创建任务条目，分配 abortController</li>
+  <li><strong>进度追踪</strong>：<code>ProgressTracker</code> 跟踪 token 消耗、工具调用次数、最近活动描述</li>
+  <li><strong>状态转换</strong>：pending → running → completed / failed / killed</li>
+  <li><strong>通知</strong>：完成后通过 <code>enqueueAgentNotification()</code> 以 <code>&lt;task-notification&gt;</code> XML 消息通知主 agent</li>
+  <li><strong>终止</strong>：<code>killAsyncAgent()</code> + <code>TaskStop</code> 工具允许用户停止运行中的 agent</li>
+</ul>
+
+<h4>Agent 名称注册表</h4>
+<p><code>agentNameRegistry</code>（Map&lt;string, AgentId&gt;）维护 name → agentId 映射，支持：</p>
+<ul>
+  <li><code>SendMessage(to: "name")</code> — 通过名称向 agent 发送消息</li>
+  <li><code>SendMessage(to: "agent-id")</code> — 通过 ID 向 agent 发送消息</li>
+  <li>Resume：agent 保持完整对话上下文，可继续工作</li>
+</ul>
+
+<h4>Worktree 隔离</h4>
+<p>Agent 可通过 <code>isolation: "worktree"</code> 在独立 git worktree 中运行：</p>
+<ul>
+  <li><code>createAgentWorktree()</code> 创建临时 worktree</li>
+  <li>Agent 完成后检测是否有变更（对比 HEAD commit）</li>
+  <li>无变更 → 自动删除 worktree</li>
+  <li>有变更 → 保留 worktree，返回路径和分支名</li>
+</ul>
+
+<h4>Prompt Cache 共享</h4>
+<p>Fork subagent 的核心优化：</p>
+<ul>
+  <li>子 agent 继承父 agent 的完整系统提示词</li>
+  <li>共享相同的 tools 数组（<code>useExactTools: true</code>）</li>
+  <li>共享相同的 thinkingConfig</li>
+  <li>子 agent 的 API 请求前缀与父 agent 字节级一致 → prompt cache hit</li>
+  <li>只有最后的 directive text 不同（每个 fork 子 agent 特有）</li>
+</ul>
+
+<h3>4.4 Coordinator Mode</h3>
+
+<p>Coordinator mode 是一种特殊的编排模式（通过 <code>CLAUDE_CODE_COORDINATOR_MODE=1</code> 环境变量启用）：</p>
+
+<ul>
+  <li><strong>角色分离</strong>：Coordinator 负责理解需求、分解任务、合成结果；Worker 负责具体执行</li>
+  <li><strong>专用 agent 类型</strong>：coordinator 模式下使用 <code>worker</code> agent 类型（而非 general-purpose）</li>
+  <li><strong>强制异步</strong>：所有 worker 都是异步的，结果通过 <code>&lt;task-notification&gt;</code> 传递</li>
+  <li><strong>并行化</strong>：coordinator 系统提示词强调并行启动多个 worker</li>
+  <li><strong>工作流程</strong>：Research（并行 worker）→ Synthesis（coordinator）→ Implementation（worker）→ Verification（worker）</li>
+  <li><strong>Continue vs Spawn</strong>：coordinator 的提示词详细指导何时继续已有 worker（SendMessage）vs 启动新 worker（Agent）</li>
+</ul>
+
+<h3>4.5 图示：Agent 协调全景</h3>
+
+<pre><code>                        ┌─────────────────────────┐
+                        │     User (Terminal)      │
+                        └────────────┬────────────┘
+                                     │
+                        ┌────────────▼────────────┐
+                        │   Main Agent (REPL)     │
+                        │   system prompt + tools │
+                        └───┬──────┬──────┬───────┘
+                            │      │      │
+              ┌─────────────┘      │      └─────────────┐
+              │                    │                    │
+     ┌────────▼────────┐  ┌───────▼────────┐  ┌────────▼────────┐
+     │  Sync Subagent  │  │ Async Subagent │  │  Fork Subagent  │
+     │  (foreground)   │  │  (background)  │  │ (cache-sharing) │
+     │                 │  │                │  │                 │
+     │ • shares abort  │  │ • independent  │  │ • inherits ctx  │
+     │ • can show UI   │  │ • no UI        │  │ • prompt cache  │
+     │ • blocks parent │  │ • notification │  │ • force async   │
+     └────────┬────────┘  └───────┬────────┘  └────────┬────────┘
+              │                    │                    │
+              └────────────────────┼────────────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │        runAgent()           │
+                    │  • isolate context          │
+                    │  • filter tools             │
+                    │  • init MCP servers         │
+                    │  • register hooks           │
+                    │  • preload skills           │
+                    │  • query() loop             │
+                    │  • record transcript        │
+                    └──────────────┬──────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              │                    │                    │
+     ┌────────▼────────┐  ┌───────▼────────┐  ┌────────▼────────┐
+     │ LocalAgentTask  │  │ AgentMemory    │  │ Worktree        │
+     │ (task mgmt)     │  │ (persistent)   │  │ (isolation)     │
+     └─────────────────┘  └────────────────┘  └─────────────────┘
+</code></pre>
+
+<hr>
+
+<!-- ============================================================ -->
+<h2 id="appendix">附录：关键源码文件索引</h2>
+
+<table>
+<tr><th>文件</th><th>职责</th></tr>
+<tr><td><code>src/tools/AgentTool/AgentTool.tsx</code></td><td>Agent 工具注册、<code>call()</code> 路由入口（~1397 行）</td></tr>
+<tr><td><code>src/tools/AgentTool/prompt.ts</code></td><td>生成 Agent 工具描述文本（提供给模型的 when-to-use 等指引）</td></tr>
+<tr><td><code>src/tools/AgentTool/builtInAgents.ts</code></td><td>内置 agent 注册 + feature gate 控制</td></tr>
+<tr><td><code>src/tools/AgentTool/loadAgentsDir.ts</code></td><td>Agent 定义类型、从 markdown/JSON 解析、去重合并</td></tr>
+<tr><td><code>src/tools/AgentTool/runAgent.ts</code></td><td>Subagent 核心执行引擎（创建隔离 context、MCP、hooks、query 循环）</td></tr>
+<tr><td><code>src/tools/AgentTool/agentToolUtils.ts</code></td><td>工具过滤 <code>filterToolsForAgent()</code>、结果构建、异步生命周期</td></tr>
+<tr><td><code>src/tools/AgentTool/forkSubagent.ts</code></td><td>Fork subagent 消息构建、递归 guard、worktree notice</td></tr>
+<tr><td><code>src/tools/AgentTool/resumeAgent.ts</code></td><td>恢复已存在的 subagent（从 transcript 重建上下文）</td></tr>
+<tr><td><code>src/tools/AgentTool/agentMemory.ts</code></td><td>Agent 持久化记忆（user/project/local scope）</td></tr>
+<tr><td><code>src/tools/AgentTool/agentColorManager.ts</code></td><td>Agent 颜色分配（UI 区分）</td></tr>
+<tr><td><code>src/tools/AgentTool/constants.ts</code></td><td><code>AGENT_TOOL_NAME</code>、<code>ONE_SHOT_BUILTIN_AGENT_TYPES</code></td></tr>
+<tr><td><code>src/tools/AgentTool/built-in/generalPurposeAgent.ts</code></td><td>通用 agent 定义</td></tr>
+<tr><td><code>src/tools/AgentTool/built-in/exploreAgent.ts</code></td><td>Explore agent（只读搜索）</td></tr>
+<tr><td><code>src/tools/AgentTool/built-in/planAgent.ts</code></td><td>Plan agent（架构规划）</td></tr>
+<tr><td><code>src/tools/AgentTool/built-in/claudeCodeGuideAgent.ts</code></td><td>Claude Code 指南 agent</td></tr>
+<tr><td><code>src/tools/AgentTool/built-in/statuslineSetup.ts</code></td><td>状态栏配置 agent</td></tr>
+<tr><td><code>src/tools/AgentTool/built-in/verificationAgent.ts</code></td><td>验证 agent</td></tr>
+<tr><td><code>src/utils/model/agent.ts</code></td><td>Agent model 选择逻辑（inherit、bare alias 匹配、Bedrock region 继承）</td></tr>
+<tr><td><code>src/utils/forkedAgent.ts</code></td><td>Fork agent 通用工具：<code>createSubagentContext()</code>、<code>CacheSafeParams</code></td></tr>
+<tr><td><code>src/utils/agentContext.ts</code></td><td>AsyncLocalStorage 隔离的 agent 上下文（用于 analytics attribution）</td></tr>
+<tr><td><code>src/utils/plugins/loadPluginAgents.ts</code></td><td>从插件加载 agent 定义</td></tr>
+<tr><td><code>src/coordinator/coordinatorMode.ts</code></td><td>Coordinator 模式：系统提示词、worker 工具列表、user context</td></tr>
+<tr><td><code>src/constants/tools.ts</code></td><td><code>ALL_AGENT_DISALLOWED_TOOLS</code>、<code>ASYNC_AGENT_ALLOWED_TOOLS</code> 等常量</td></tr>
+<tr><td><code>src/tasks/LocalAgentTask/LocalAgentTask.tsx</code></td><td>异步 agent 任务管理（注册、进度、通知、终止）</td></tr>
+<tr><td><code>src/components/agents/</code></td><td>Agent 相关 UI 组件（列表、编辑、创建向导）</td></tr>
+</table>
+
+</body>
+</html>

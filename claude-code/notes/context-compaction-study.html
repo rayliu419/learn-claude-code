@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Context Compaction 机制深度解析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  /* Hero */
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  /* Container */
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  /* Headings */
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  /* Cards */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  /* Code */
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  /* Badges */
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  /* Flowchart */
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  /* Callout */
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+  .callout-danger { border-left-color:var(--red); background:#fde2e2; }
+
+  /* File refs */
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* Lists in cards */
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+  ul, ol { padding-left:20px; margin:4px 0; }
+  li { margin:2px 0; }
+
+  /* Toc */
+  .toc { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 18px; margin-bottom:16px; }
+  .toc ol { margin:4px 0 0; }
+  .toc a { color:var(--accent); text-decoration:none; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Context Compaction 机制深度解析</h1>
+  <p class="sub">何时触发 · 如何选择丢弃内容 · 无限增长的兜底策略</p>
+  <div class="meta">
+    <span>7 层递进式防线</span>
+    <span>规则决策 + 模型决策</span>
+    <span>电路断路器</span>
+    <span>413 反应式压缩</span>
+    <span>零 LLM 调用路径</span>
+  </div>
+</header>
+
+<div class="container">
+
+<nav class="toc">
+  <p style="margin:0 0 2px;font-weight:600">目录</p>
+  <ol>
+    <li><a href="#arch">架构总览：七层递进式防线</a></li>
+    <li><a href="#decision">何时决策压缩？—— Autocompact 阈值体系</a></li>
+    <li><a href="#overflow">无限增长怎么办？—— 四层兜底策略</a></li>
+    <li><a href="#what-to-drop">丢弃策略：规则驱动 vs 模型决策</a></li>
+    <li><a href="#layers">各层机制详解</a></li>
+    <li><a href="#key-numbers">关键数字速查</a></li>
+    <li><a href="#design">设计洞察</a></li>
+    <li><a href="#references">源码引用索引</a></li>
+  </ol>
+</nav>
+
+<!-- ############################################################# -->
+<h2 id="arch">一、架构总览：七层递进式防线</h2>
+
+<p>Context Compaction 不是单一机制，而是<strong>七层递进式防线</strong>。每层比上一层代价更高，但能释放更多上下文空间。核心设计原则：<strong>轻量操作优先，让后续层可能不需要触发</strong>。</p>
+
+<div class="flow">query.ts 每轮循环（每次 API 调用前）
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ ① Snip Compact          剪断边界之前的历史消息               │
+  │    ↓ tokensFreed 传递给后续阈值计算                          │
+  │ ② Tool Result Budget    替换超大工具结果内容                 │
+  │    ↓                                                         │
+  │ ③ Microcompact          清除旧工具结果                       │
+  │    ├─ Time-based:  超过 60 分钟空闲 → 内容清除               │
+  │    └─ Cached:      API cache_edits 删除（保持缓存热度）      │
+  │    ↓                                                         │
+  │ ④ Context Collapse      分级折叠上下文块（与 autocompact 互斥）│
+  │    ↓                                                         │
+  │ ⑤ <strong>Autocompact 决策点</strong>                                │
+  │    ├─ trySessionMemoryCompaction()  → 零 LLM 调用             │
+  │    └─ compactConversation()         → LLM 生成摘要            │
+  │                                                               │
+  │ ⑥ API 调用 → 若返回 413 (prompt too long):                   │
+  │    ├─ Context Collapse drain        → 排空折叠队列            │
+  │    └─ Reactive Compact              → 紧凑摘要 + 保留尾部     │
+  └──────────────────────────────────────────────────────────────┘</div>
+
+<div class="card">
+  <p style="margin:0">前三层（snip、tool budget、microcompact）在 autocompact 决策<strong>之前</strong>运行。如果它们释放的 token 足够让用量降到阈值以下，autocompact 就不会触发——相当于"先清扫再判断是否要大扫除"。</p>
+</div>
+
+<!-- ############################################################# -->
+<h2 id="decision">二、何时决策压缩？—— Autocompact 阈值体系</h2>
+
+<p>核心逻辑位于 <code class="inline">src/services/compact/autoCompact.ts</code>。</p>
+
+<h3>2.1 阈值计算链</h3>
+
+<pre><code>// 第 1 步：有效上下文窗口
+effectiveWindow = min(模型窗口, CLAUDE_CODE_AUTO_COMPACT_WINDOW) - 20K
+//                    ↑                                    ↑
+//              默认 200K                         为 compact 输出预留
+
+// 第 2 步：Autocompact 触发阈值
+autoCompactThreshold = effectiveWindow - 13K  (AUTOCOMPACT_BUFFER_TOKENS)
+
+// 以 200K 模型为例：
+//   effectiveWindow      = 200K - 20K = 180K
+//   autoCompactThreshold  = 180K - 13K = 167K
+//   → token 用量达到 ~167K 时触发 autocompact</code></pre>
+
+<h3>2.2 多级警告体系</h3>
+
+<table>
+  <thead><tr><th>级别</th><th>计算公式 (200K 模型参考)</th><th>行为</th></tr></thead>
+  <tbody>
+    <tr><td><span class="badge badge-blue">Warning</span></td><td>threshold - 20K ≈ 147K</td><td>UI 黄色警告 "context N% remaining"</td></tr>
+    <tr><td><span class="badge badge-orange">Error</span></td><td>threshold - 20K ≈ 147K</td><td>UI 红色警告</td></tr>
+    <tr><td><span class="badge badge-purple">Autocompact</span></td><td>effectiveWindow - 13K ≈ 167K</td><td>触发自动压缩</td></tr>
+    <tr><td><span class="badge badge-red">Blocking</span></td><td>effectiveWindow - 3K ≈ 177K</td><td>阻止继续对话，强制手动 /compact</td></tr>
+  </tbody>
+</table>
+
+<h3>2.3 每轮循环的检查顺序</h3>
+
+<p>在 <code class="inline">query.ts</code> 的主循环中，<strong>每次 API 调用前</strong>依次执行：</p>
+
+<div class="card">
+  <ol style="margin:0">
+    <li><code class="inline">getMessagesAfterCompactBoundary()</code> — 裁剪掉旧压缩边界之前的消息（<code class="inline">src/utils/messages.ts:4643</code>）</li>
+    <li><code class="inline">applyToolResultBudget()</code> — 替换超大工具结果内容</li>
+    <li><code class="inline">snipCompactIfNeeded()</code> — 剪断历史</li>
+    <li><code class="inline">microcompactMessages()</code> — 先时间触发判断，再缓存编辑判断</li>
+    <li><code class="inline">contextCollapse.applyCollapsesIfNeeded()</code> — 投影折叠视图</li>
+    <li><strong><code class="inline">autoCompactIfNeeded()</code> — 这才是 autocompact 的决策点</strong></li>
+  </ol>
+</div>
+
+<h3>2.4 不触发的条件（守卫）</h3>
+
+<p>以下情况 <code class="inline">shouldAutoCompact()</code> 返回 <code class="inline">false</code>，<strong>即使 token 用量超过阈值也不会触发</strong>：</p>
+
+<div class="card">
+  <ul style="margin:0">
+    <li>querySource 是 <code class="inline">session_memory</code> 或 <code class="inline">compact</code> — 防止 forked agent 递归死锁</li>
+    <li>querySource 是 <code class="inline">marble_origami</code> — 与 Context Collapse 的模块级状态冲突</li>
+    <li><code class="inline">DISABLE_COMPACT</code> / <code class="inline">DISABLE_AUTO_COMPACT</code> 环境变量已设置</li>
+    <li>用户配置中 <code class="inline">autoCompactEnabled === false</code></li>
+    <li>REACTIVE_COMPACT 模式下若 GrowthBook flag 让 reactive 完全接管</li>
+    <li>CONTEXT_COLLAPSE 启用时 — collapse 自己管理 headroom，autocompact 会与它竞争</li>
+  </ul>
+</div>
+
+<div class="callout callout-tip">
+  <p style="margin:0"><strong>为什么 collapse 和 autocompact 互斥？</strong> Autocompact 在 ~93% 触发（effective-13K），恰好在 collapse 的 commit-start (90%) 和 blocking (95%) 之间。两者同时启用，autocompact 会在 collapse 来得及保存细粒度上下文之前用一个大摘要覆盖所有内容。</p>
+</div>
+
+<!-- ############################################################# -->
+<h2 id="overflow">三、无限增长怎么办？—— 四层兜底策略</h2>
+
+<p>用户不断处理同一个 session，token 最终一定会超出窗口。系统有四层兜底：</p>
+
+<h3>3.1 电路断路器（Circuit Breaker）<span class="badge badge-red">第一道防线</span></h3>
+
+<div class="callout callout-danger">
+  <p style="margin:0"><strong>MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3</strong></p>
+  <p style="margin:0">连续 3 次 autocompact 失败后，<strong>停止重试</strong>。Code comment 指出：1,279 个 session 曾有 50+ 次连续失败（最多 3,272 次），每天浪费约 <strong>25 万次 API 调用</strong>。</p>
+</div>
+
+<pre><code>// autoCompact.ts 第 260-265 行
+if (tracking?.consecutiveFailures !== undefined &&
+    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
+  return { wasCompacted: false } // 断路器跳闸
+}</code></pre>
+
+<h3>3.2 Compact API 自身的 PTL 重试 <span class="badge badge-orange">第二道防线</span></h3>
+
+<p>compact API 调用本身也可能 Prompt Too Long（要总结的消息太多了）。此时按 API round 分组，从最老的一组开始丢弃，最多重试 <code class="inline">MAX_PTL_RETRIES = 3</code> 次。fallback 方案：丢弃 20% 的 API round 组。</p>
+
+<h3>3.3 Reactive Compact（413 反应式压缩）<span class="badge badge-purple">第三道防线</span></h3>
+
+<p>当所有前置压缩都未能阻止 413 错误时，系统<strong>不立即显示错误给用户</strong>：</p>
+
+<div class="flow">API 返回 413
+  │
+  ├─ streaming loop withhold（暂扣）错误，不显示
+  │
+  ├─ Step 1: Context Collapse drain
+  │   排空所有 staged 折叠 → 成功? → retry API
+  │   ↓ 失败或已 drain 过
+  │
+  ├─ Step 2: Reactive Compact
+  │   紧凑摘要 + 保留尾部消息 → 成功? → retry API
+  │   ↓ 失败 (hasAttemptedReactiveCompact = true)
+  │
+  └─ Step 3: 彻底放弃
+      → 显示 "Prompt is too long" 给用户
+      → 不触发 stop hooks（防止 hook → 注入更多 token → 413 → 死循环）</div>
+
+<h3>3.4 Blocking Limit <span class="badge badge-red">最终拦阻</span></h3>
+
+<p>当 token 用量达到 <code class="inline">effectiveWindow - 3K</code> 且所有恢复手段都失败后，系统阻止继续对话，用户必须手动 <code class="inline">/compact</code> 或开启新 session。</p>
+
+<!-- ############################################################# -->
+<h2 id="what-to-drop">四、丢弃策略：规则驱动 vs 模型决策</h2>
+
+<p>这是最核心的设计问题。答案：<strong>两者结合，各司其职</strong>。</p>
+
+<table>
+  <thead>
+    <tr><th>决策</th><th>谁决定</th><th>机理</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>哪些消息需要压缩</strong></td>
+      <td><span class="badge badge-green">规则</span></td>
+      <td>token 阈值、保留上限（10K–40K）、最小文本消息数（5）、工具配对完整性</td>
+    </tr>
+    <tr>
+      <td><strong>被压缩消息如何浓缩</strong></td>
+      <td><span class="badge badge-purple">LLM 模型</span></td>
+      <td>九维度 compact prompt 引导模型提取关键信息（不调用工具）</td>
+    </tr>
+    <tr>
+      <td><strong>压缩后保留哪些文件</strong></td>
+      <td><span class="badge badge-green">规则</span></td>
+      <td>最多 5 个最近读取文件，总预算 50K tokens，单文件上限 5K</td>
+    </tr>
+    <tr>
+      <td><strong>压缩后保留哪些 Skill</strong></td>
+      <td><span class="badge badge-green">规则</span></td>
+      <td>最近调用的 skills，单 skill 上限 5K，总预算 25K</td>
+    </tr>
+    <tr>
+      <td><strong>Microcompact 清除哪些工具结果</strong></td>
+      <td><span class="badge badge-green">规则</span></td>
+      <td>只保留最近 N 个（默认 5），只清除 8 种白名单工具类型</td>
+    </tr>
+    <tr>
+      <td><strong>Compact API 自身 PTL 丢弃什么</strong></td>
+      <td><span class="badge badge-green">规则</span></td>
+      <td>按 API round 分组，从最老组开始丢弃，最多 3 次重试</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>4.1 模型决策：Compact Prompt 九维度</h3>
+
+<p>Full Compact 触发时，一个<strong>禁止所有 tool use 的 LLM</strong> 生成摘要。九维度结构：</p>
+
+<div class="card">
+  <ol style="margin:0">
+    <li><strong>Primary Request and Intent</strong> — 用户的主要意图</li>
+    <li><strong>Key Technical Concepts</strong> — 涉及的技术概念、框架</li>
+    <li><strong>Files and Code Sections</strong> — 操作过的文件 + 完整代码片段 + 为什么重要</li>
+    <li><strong>Errors and Fixes</strong> — 错误 + 修复方法 + 用户反馈</li>
+    <li><strong>Problem Solving</strong> — 已解决问题 + 进行中的排错</li>
+    <li><strong>All User Messages</strong> — <strong>所有非工具结果的用户消息</strong>（理解 feedback 和意图变迁的关键）</li>
+    <li><strong>Pending Tasks</strong> — 待处理任务</li>
+    <li><strong>Current Work</strong> — 最近消息的精确描述（含文件名和代码）</li>
+    <li><strong>Optional Next Step</strong> — 可选的下一步（含原文引用确认）</li>
+  </ol>
+</div>
+
+<div class="callout callout-tip">
+  <p style="margin:0"><strong>设计亮点：</strong> Prompt 先让模型输出 <code class="inline">&lt;analysis&gt;</code> 草稿块，再输出 <code class="inline">&lt;summary&gt;</code>。<code class="inline">formatCompactSummary()</code> 剥离 analysis 块，只保留 summary 放入上下文。analysis 是给模型的"草稿纸"，提高摘要质量但不占用上下文。</p>
+</div>
+
+<h3>4.2 规则决策：Session Memory Compact 的消息保留算法</h3>
+
+<p>Session Memory Compact 完全是规则驱动，不做 LLM 调用，直接使用后台预提取的会话笔记：</p>
+
+<pre><code>// sessionMemoryCompact.ts — 消息保留配置
+const DEFAULT_SM_COMPACT_CONFIG = {
+  minTokens: 10_000,          // 至少保留 10K tokens
+  minTextBlockMessages: 5,    // 至少保留 5 条文本消息
+  maxTokens: 40_000,          // 保留硬上限 40K tokens
+}
+
+// 算法：
+// 1. 从 lastSummarizedMessageId 之后开始计算
+// 2. 如果 tokens < minTokens 或消息数 < minTextBlockMessages
+//    → 向前扩展（包含更多消息）
+// 3. 如果 tokens ≥ maxTokens → 停止
+// 4. adjustIndexToPreserveAPIInvariants():
+//    → 确保 tool_use/tool_result 配对不被拆分
+//    → 确保共享 message.id 的 thinking block 不被孤立
+// 5. 压缩后若仍 ≥ autoCompactThreshold → 返回 null，fallback 到 Full Compact</code></pre>
+
+<h3>4.3 Compactable 工具白名单</h3>
+
+<p>Microcompact <strong>只清除这 8 种工具</strong>的结果（其他工具结果不受影响）：</p>
+
+<div class="card">
+  <p style="margin:0"><code class="inline">Read</code> · <code class="inline">Bash*</code>（所有 Shell 工具）· <code class="inline">Grep</code> · <code class="inline">Glob</code> · <code class="inline">WebSearch</code> · <code class="inline">WebFetch</code> · <code class="inline">FileEdit</code> · <code class="inline">FileWrite</code></p>
+</div>
+
+<!-- ############################################################# -->
+<h2 id="layers">五、各层机制详解</h2>
+
+<h3>5.1 Snip Compact <span class="badge badge-blue">Feature: HISTORY_SNIP</span></h3>
+
+<div class="file-ref"><span class="path">src/query.ts:396-409</span><span class="role">最先运行，从消息数组中物理剪切旧历史，不做总结</span></div>
+
+<p>与 autocompact 不同，snip 不做总结而是直接丢弃。由于 assistant 消息中的 token usage 保留的是 snip 前的统计，<code class="inline">snipTokensFreed</code> 被传递给后续 autocompact 的阈值计算进行修正。</p>
+
+<h3>5.2 Tool Result Budget <span class="badge badge-blue">Feature Gate</span></h3>
+
+<div class="file-ref"><span class="path">src/query.ts:369-394</span><span class="role">对单个工具结果进行预算截断，在 microcompact 之前运行</span></div>
+
+<p>如果某个工具返回了超大结果（如读取巨型文件），将其内容替换为截断版本。只修改内容，不影响缓存结构。</p>
+
+<h3>5.3 Microcompact — 两个独立路径</h3>
+
+<div class="file-ref"><span class="path">src/services/compact/microCompact.ts</span><span class="role">轻量级预请求上下文清理，不调用 API</span></div>
+
+<h4>Time-based Microcompact <span class="badge badge-orange">GrowthBook: tengu_slate_heron</span></h4>
+
+<ul>
+  <li><strong>触发条件：</strong>距上一条 assistant 消息 ≥ <code class="inline">gapThresholdMinutes</code>（默认 60 分钟）</li>
+  <li><strong>操作：</strong>将旧的可压缩工具结果内容替换为 <code class="inline">[Old tool result content cleared]</code> 占位符</li>
+  <li>只保留最近 <code class="inline">keepRecent</code> 个（默认 5）工具结果不被清除</li>
+  <li><strong>原理：</strong>长时间未活动 → server-side cache 已过期 → 下次请求整个 prefix 会重写 → 提前清除旧内容减小重写体积</li>
+  <li>清除后同时 reset cached MC state（cache 已冷，cache_edits 不再有效）</li>
+</ul>
+
+<h4>Cached Microcompact <span class="badge badge-blue">Feature: CACHED_MICROCOMPACT</span></h4>
+
+<ul>
+  <li>使用 Anthropic API 的 <code class="inline">cache_edits</code> 功能，<strong>在不破坏提示缓存的前提下</strong>删除旧工具结果</li>
+  <li>维护模块级全局状态：<code class="inline">registeredTools</code>、<code class="inline">toolOrder</code>、<code class="inline">pendingCacheEdits</code></li>
+  <li>生成的 <code class="inline">cache_edits</code> 块附加在下一次 API 请求中</li>
+  <li>边界消息延迟到 API 响应后发出（使用真实的 <code class="inline">cache_deleted_input_tokens</code>）</li>
+  <li><strong>只在主线程运行：</strong>防止 forked agent 的 tool_results 污染全局状态</li>
+</ul>
+
+<h3>5.4 Context Collapse <span class="badge badge-purple">Feature: CONTEXT_COLLAPSE</span></h3>
+
+<div class="file-ref"><span class="path">src/query.ts:440-447</span><span class="role">与 autocompact 互斥的替代上下文管理方案</span></div>
+
+<ul>
+  <li>启用时 autocompact 被抑制，由 collapse 自己管理上下文 headroom</li>
+  <li>~90% token 用量 → 开始提交折叠（commit）</li>
+  <li>~95% → 阻塞式等待折叠完成</li>
+  <li>折叠操作是<strong>可投影的</strong>：不修改 REPL 完整历史，而是在读取时投影出折叠后视图</li>
+  <li><strong>跨轮持久化：</strong>下次循环进入时 <code class="inline">projectView()</code> 从提交日志重放折叠</li>
+  <li>当 413 发生时，先 drain（排空）所有 staged 折叠队列</li>
+</ul>
+
+<h3>5.5 Session Memory Compact <span class="badge badge-green">优先尝试</span></h3>
+
+<div class="file-ref"><span class="path">src/services/compact/sessionMemoryCompact.ts</span><span class="role">零 LLM 调用的压缩路径，autocompact 和 /compact 都优先尝试</span></div>
+
+<p><strong>为什么优先？</strong> Session Memory 是后台 task 持续提取的会话笔记。压缩时直接使用已有内容，省去一次 LLM API 调用。只有当 session memory 为空或压缩后仍超标时，才 fallback 到昂贵的 Full Compact。</p>
+
+<p>处理两种场景：</p>
+<ul>
+  <li><strong>正常 case：</strong>有 <code class="inline">lastSummarizedMessageId</code>，只保留该 ID 之后的消息</li>
+  <li><strong>Resumed session：</strong>没有 <code class="inline">lastSummarizedMessageId</code> 但有 session memory 内容，保留全部消息但使用 session memory 作为摘要</li>
+</ul>
+
+<h3>5.6 Full Compact — LLM 总结 <span class="badge badge-purple">最昂贵路径</span></h3>
+
+<div class="file-ref"><span class="path">src/services/compact/compact.ts</span><span class="role">核心 compact 逻辑，约 1700 行</span></div>
+
+<p>完整流程：</p>
+
+<div class="flow">compactConversation() 执行流程:
+
+  1. pre-compact hooks (用户可注入自定义指令)
+  2. stripImagesFromMessages()
+     image/document → [image]/[document] 文本标记
+     防止图片撑爆 compact API 自身
+  3. stripReinjectedAttachments()
+     去掉会被重新注入的 skill_discovery/skill_listing
+  4. streamCompactSummary()
+     ├─ Forked Agent 路径 (默认): 共享主对话 prompt cache → ~98% 命中率
+     └─ Streaming 路径: fallback (模型不兼容时)
+  5. PTL 重试循环 (compact API 自身 PTL 时):
+     按 API round 分组 → 丢弃最老组 → 最多重试 3 次
+  6. Post-compact 附件重建:
+     ├─ 最近读取文件 (≤5 个, ≤50K tokens, 单文件 ≤5K)
+     ├─ Plan 文件 (如有)
+     ├─ 最近调用 Skill (单 skill ≤5K, 总预算 ≤25K)
+     ├─ 后台 agent 状态
+     └─ Plan mode 状态
+  7. post-compact hooks
+  8. cleanup: runPostCompactCleanup()</div>
+
+<h3>5.7 Reactive Compact — 413 兜底 <span class="badge badge-red">最后防线</span></h3>
+
+<div class="file-ref"><span class="path">src/query.ts:1062-1183</span><span class="role">API 返回 413 后的恢复流程</span></div>
+
+<ul>
+  <li>413 错误在 streaming loop 中被 <strong>withhold</strong>（暂扣），不立即显示给用户</li>
+  <li>先尝试 Context Collapse drain（如果 collapse 启用）</li>
+  <li>再尝试 Reactive Compact — 生成紧凑摘要并丢弃超出部分</li>
+  <li><code class="inline">hasAttemptedReactiveCompact</code> flag 防止无限循环</li>
+  <li>特别处理 <strong>media-size 错误</strong>（图片/PDF 太大），通过 stripImages 后重试</li>
+  <li>所有手段耗尽后才向用户显示错误</li>
+  <li><strong>不触发 stop hooks：</strong>否则 hook → 注入 tokens → 413 → hook 注入 → 死循环</li>
+</ul>
+
+<!-- ############################################################# -->
+<h2 id="key-numbers">六、关键数字速查</h2>
+
+<table>
+  <thead><tr><th style="width:280px">常量</th><th style="width:80px">值</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">MODEL_CONTEXT_WINDOW_DEFAULT</code></td><td>200K</td><td>默认模型上下文窗口 (context.ts)</td></tr>
+    <tr><td><code class="inline">COMPACT_MAX_OUTPUT_TOKENS</code></td><td>20K</td><td>compact API 调用最大输出 token</td></tr>
+    <tr><td><code class="inline">AUTOCOMPACT_BUFFER_TOKENS</code></td><td>13K</td><td>autocompact 触发缓冲区</td></tr>
+    <tr><td><code class="inline">WARNING_THRESHOLD_BUFFER_TOKENS</code></td><td>20K</td><td>警告阈值缓冲区</td></tr>
+    <tr><td><code class="inline">ERROR_THRESHOLD_BUFFER_TOKENS</code></td><td>20K</td><td>错误阈值缓冲区</td></tr>
+    <tr><td><code class="inline">MANUAL_COMPACT_BUFFER_TOKENS</code></td><td>3K</td><td>阻塞极限缓冲区</td></tr>
+    <tr><td><code class="inline">MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES</code></td><td>3</td><td>电路断路器最大连续失败次数</td></tr>
+    <tr><td><code class="inline">MAX_PTL_RETRIES</code></td><td>3</td><td>compact API 自身 PTL 最大重试</td></tr>
+    <tr><td><code class="inline">POST_COMPACT_MAX_FILES_TO_RESTORE</code></td><td>5</td><td>压缩后恢复的最大文件数</td></tr>
+    <tr><td><code class="inline">POST_COMPACT_TOKEN_BUDGET</code></td><td>50K</td><td>压缩后附件 token 总预算</td></tr>
+    <tr><td><code class="inline">POST_COMPACT_MAX_TOKENS_PER_FILE</code></td><td>5K</td><td>单个恢复文件 token 上限</td></tr>
+    <tr><td><code class="inline">POST_COMPACT_MAX_TOKENS_PER_SKILL</code></td><td>5K</td><td>单个恢复 skill token 上限</td></tr>
+    <tr><td><code class="inline">POST_COMPACT_SKILLS_TOKEN_BUDGET</code></td><td>25K</td><td>恢复 skills 总预算</td></tr>
+    <tr><td><code class="inline">SM_CONFIG.minTokens</code></td><td>10K</td><td>SM compact 最少保留 token</td></tr>
+    <tr><td><code class="inline">SM_CONFIG.maxTokens</code></td><td>40K</td><td>SM compact 最多保留 token</td></tr>
+    <tr><td><code class="inline">SM_CONFIG.minTextBlockMessages</code></td><td>5</td><td>SM compact 最少保留文本消息数</td></tr>
+    <tr><td>Time-based MC gapThreshold</td><td>60 min</td><td>时间触发 microcompact 的空闲阈值</td></tr>
+    <tr><td>Time-based MC keepRecent</td><td>5</td><td>时间触发 microcompact 保留数</td></tr>
+  </tbody>
+</table>
+
+<!-- ############################################################# -->
+<h2 id="design">七、设计洞察</h2>
+
+<div class="card">
+  <h4 style="margin-top:0">7.1 Forked Agent + Cache Sharing</h4>
+  <p style="margin:0">Compact API 调用复用主对话的 prompt cache（共享 system prompt + tools + messages prefix），达到 <strong>~98% cache 命中率</strong>。没有 cache sharing，每次 compact 将产生 ~200K token 的 cache creation 成本。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">7.2 子进程隔离（Subagent Isolation）</h4>
+  <p style="margin:0"><code class="inline">runPostCompactCleanup()</code> 检查 <code class="inline">querySource</code>，只为 main-thread 重置模块级状态。子 agent 的 compact 不会清除主线程的 microcompact 状态、context collapse 状态等。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">7.3 工具配对完整性（Invariant Preservation）</h4>
+  <p style="margin:0"><code class="inline">adjustIndexToPreserveAPIInvariants()</code> 是一个精心设计的函数：</p>
+  <ul style="margin:2px 0 0">
+    <li>如果保留的 user 消息中有 <code class="inline">tool_result</code>，确保对应的 <code class="inline">tool_use</code> 也在保留范围内</li>
+    <li>如果保留的 assistant 消息与前面的消息共享 <code class="inline">message.id</code>（streaming 产生的分片），一起保留以确保 thinking block 不丢失</li>
+    <li>索引 floor 在 compact boundary（磁盘不连续性），防止 loader 的 tail→head walk 跳过 inner preserved messages</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">7.4 压缩后的无缝衔接</h4>
+  <p style="margin:0">压缩后的 summary 消息包含精确指引：</p>
+  <ul style="margin:2px 0 0">
+    <li>"This session is being continued from a previous conversation that ran out of context."</li>
+    <li>Transcript 文件路径（让模型需要时可以读取完整历史）</li>
+    <li>Autocompact 模式："Continue ... without asking the user any further questions. Resume directly — do not acknowledge the summary."</li>
+    <li>Proactive mode 特殊提示：这不是第一次 wake-up，不要问候用户</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">7.5 Skill 内容跨压缩保持</h4>
+  <p style="margin:0">调用的 skill 内容<strong>有意不</strong>在压缩时清除（<code class="inline">runPostCompactCleanup</code> 跳过 reset 已调用的 skill names）。每次压缩后重新注入最近调用 skills 的内容，确保 agent 在压缩后仍知道如何执行特定领域任务。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">7.6 压缩警告 UI 抑制</h4>
+  <p style="margin:0"><code class="inline">compactWarningState.ts</code> 追踪压缩后 "context 剩余 X%" 警告是否应抑制。压缩成功后抑制，因为下一次 API 响应前准确的 token 计数还不可用。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">7.7 压缩中的 Token 估算</h4>
+  <p style="margin:0">压缩阈值检查使用 <code class="inline">tokenCountWithEstimation()</code>：取上次 API 响应的真实 token 计数 + 对之后新增消息的估算（padding 4/3 以保守估计）。这避免了每次都要等 API 响应才知道是否需要压缩。</p>
+</div>
+
+<!-- ############################################################# -->
+<h2 id="references">八、源码引用索引</h2>
+
+<h3>核心层 — 压缩引擎</h3>
+<div class="file-ref"><span class="path">src/services/compact/autoCompact.ts</span><span class="role">Autocompact 决策引擎。getEffectiveContextWindowSize()、getAutoCompactThreshold()、calculateTokenWarningState()、shouldAutoCompact()、autoCompactIfNeeded()、电路断路器</span></div>
+<div class="file-ref"><span class="path">src/services/compact/compact.ts</span><span class="role">Full / Partial Compact 主逻辑。compactConversation()、partialCompactConversation()、streamCompactSummary()、PTL 重试、post-compact 附件重建</span></div>
+<div class="file-ref"><span class="path">src/services/compact/prompt.ts</span><span class="role">三种 compact prompt 模板（BASE / PARTIAL / PARTIAL_UP_TO）、NO_TOOLS_PREAMBLE、formatCompactSummary()、getCompactUserSummaryMessage()</span></div>
+<div class="file-ref"><span class="path">src/services/compact/microCompact.ts</span><span class="role">Time-based MC + Cached MC 两条路径。evaluateTimeBasedTrigger()、maybeTimeBasedMicrocompact()、cachedMicrocompactPath()</span></div>
+<div class="file-ref"><span class="path">src/services/compact/sessionMemoryCompact.ts</span><span class="role">SM compact。trySessionMemoryCompaction()、calculateMessagesToKeepIndex()、adjustIndexToPreserveAPIInvariants()、零 LLM 调用压缩</span></div>
+<div class="file-ref"><span class="path">src/services/compact/grouping.ts</span><span class="role">groupMessagesByApiRound() — 按 API round 分组消息，用于 PTL 重试的逐组丢弃</span></div>
+<div class="file-ref"><span class="path">src/services/compact/postCompactCleanup.ts</span><span class="role">runPostCompactCleanup() — 压缩后重置模块级状态（含子进程隔离）</span></div>
+
+<h3>支持层</h3>
+<div class="file-ref"><span class="path">src/utils/context.ts</span><span class="role">MODEL_CONTEXT_WINDOW_DEFAULT (200K)、COMPACT_MAX_OUTPUT_TOKENS (20K)、getContextWindowForModel()</span></div>
+<div class="file-ref"><span class="path">src/utils/tokens.ts</span><span class="role">tokenCountWithEstimation() — 规范化的 token 计数（API 真实值 + 估算补充）</span></div>
+<div class="file-ref"><span class="path">src/utils/messages.ts</span><span class="role">createCompactBoundaryMessage()、isCompactBoundaryMessage()、getMessagesAfterCompactBoundary() — 压缩边界标记的创建、检测、切片</span></div>
+<div class="file-ref"><span class="path">src/utils/contextAnalysis.ts</span><span class="role">analyzeContext() — 按类型/category 分解 token 用量，用于 compact 事件的 Statsig 遥测</span></div>
+<div class="file-ref"><span class="path">src/services/api/errors.ts</span><span class="role">isPromptTooLongMessage()、parsePromptTooLongTokenCounts()、getPromptTooLongTokenGap()</span></div>
+<div class="file-ref"><span class="path">src/services/tokenEstimation.ts</span><span class="role">roughTokenCountEstimation() — 轻量级近似 token 计数，用于预 API 检查</span></div>
+
+<h3>编排层</h3>
+<div class="file-ref"><span class="path">src/query.ts:365-543</span><span class="role">主循环中的压缩编排。snip → microcompact → collapse → autocompact 决策 → reactive compact (413 恢复)</span></div>
+<div class="file-ref"><span class="path">src/commands/compact/compact.ts</span><span class="role">/compact 命令处理。先尝试 SM compact → reactive-only 模式 → microcompact + full compact</span></div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码 <code>src/services/compact/</code> 及关联模块 · 2026-05-28
+</p>
+
+</div>
+</body>
+</html>
