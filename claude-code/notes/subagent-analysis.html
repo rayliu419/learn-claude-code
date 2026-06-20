@@ -456,6 +456,64 @@ You are a specialized agent that helps with...
   <li><strong>终止</strong>：<code>killAsyncAgent()</code> + <code>TaskStop</code> 工具允许用户停止运行中的 agent</li>
 </ul>
 
+<h4>通知机制（核心关键）</h4>
+
+<p><strong>任务通知不是 hook 驱动的</strong>。SubagentStop hook 与任务通知是完全独立的两个机制：</p>
+
+<div class="warn-box">
+<strong>关键理解</strong>：Subagent <strong>完全不知道</strong>通知机制的存在。它没有"发送通知"的工具，没有被要求写通知信息——它只是正常完成自己的工作、输出最终文本，然后退场。通知由外部的框架代码在 subagent 结束后自动生成。
+</div>
+
+<p>通知发送的完整流程图：</p>
+
+<pre><code>Subagent query() 循环结束
+       │
+       ├─→ 1. finalizeAgentTool()
+       │     从 agentMessages 提取最后一条 assistant 的文本内容
+       │
+       ├─→ 2. completeAsyncAgent()
+       │     更新 AppState.tasks[taskId].status = 'completed'
+       │
+       ├─→ 3. enqueueAgentNotification()
+       │     构建 XML → enqueuePendingNotification()
+       │     │
+       │     │  XML 内容：
+       │     │  &lt;task-notification&gt;
+       │     │    &lt;task-id&gt;xxx&lt;/task-id&gt;
+       │     │    &lt;status&gt;completed&lt;/status&gt;
+       │     │    &lt;result&gt;探索结果摘要...&lt;/result&gt;
+       │     │    &lt;output-file&gt;/path/to/output&lt;/output-file&gt;
+       │     │    &lt;usage&gt;&lt;total_tokens&gt;...&lt;/total_tokens&gt;&lt;/usage&gt;
+       │     │    &lt;worktree&gt;...&lt;/worktree&gt;  （如有）
+       │     │  &lt;/task-notification&gt;
+       │
+       ├─→ 4. 消息队列（messageQueueManager）
+       │     XML 进入全局队列，优先级 'later'
+       │
+       ├─→ 5. 主 agent 下一轮 tool loop
+       │     query.ts 调用 getQueuedCommandAttachments()
+       │     → 通知被转换为 'queued_command' 附件消息
+       │     → 注入到主 agent 的上下文
+       │
+       └─→ 6. 主 agent 模型读到通知
+             解析 &lt;result&gt; 摘要
+             如需完整结果：Read/Bash 读取 &lt;output-file&gt;
+             如有 worktree：检查 worktree branch 上的变更
+
+注意：步骤 1-3 在 runAsyncAgentLifecycle() 中连续执行
+步骤 4-6 由主 agent 的 tool loop 在后续迭代中完成</code></pre>
+
+<h4>SubagentStop Hook（独立的用户扩展点）</h4>
+
+<p>与此同时，框架还会触发 <strong>SubagentStop hooks</strong>，但这与任务通知完全无关：</p>
+
+<ul>
+  <li><strong>机制</strong>：agent 定义中的 <code>hooks.Stop</code> 在注册时自动转为 <code>SubagentStop</code>（<code>registerFrontmatterHooks()</code> 的 <code>isAgent=true</code> 参数）</li>
+  <li><strong>执行时机</strong>：在 <code>query/stopHooks.ts</code> 中，每个 turn 结束后调用 <code>executeStopHooks()</code></li>
+  <li><strong>用途</strong>：用户自定义逻辑——发 Slack 通知、写审计日志、清理临时资源等</li>
+  <li><strong>独立运作</strong>：不负责也不参与任务通知的发送</li>
+</ul>
+
 <h4>Agent 名称注册表</h4>
 <p><code>agentNameRegistry</code>（Map&lt;string, AgentId&gt;）维护 name → agentId 映射，支持：</p>
 <ul>
@@ -498,14 +556,14 @@ You are a specialized agent that helps with...
 
 <h3>4.5 图示：Agent 协调全景</h3>
 
-<pre><code>                        ┌─────────────────────────┐
-                        │     User (Terminal)      │
-                        └────────────┬────────────┘
+<pre><code>                        ┌──────────────────────────┐
+                        │     User (Terminal)       │
+                        └────────────┬─────────────┘
                                      │
-                        ┌────────────▼────────────┐
-                        │   Main Agent (REPL)     │
-                        │   system prompt + tools │
-                        └───┬──────┬──────┬───────┘
+                        ┌────────────▼─────────────┐
+                        │   Main Agent (REPL)      │
+                        │   system prompt + tools  │
+                        └───┬──────┬──────┬────────┘
                             │      │      │
               ┌─────────────┘      │      └─────────────┐
               │                    │                    │
@@ -524,12 +582,29 @@ You are a specialized agent that helps with...
                     │        runAgent()           │
                     │  • isolate context          │
                     │  • filter tools             │
-                    │  • init MCP servers         │
-                    │  • register hooks           │
-                    │  • preload skills           │
                     │  • query() loop             │
                     │  • record transcript        │
                     └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │    subagent 循环结束         │
+                    │                             │
+                    │  1. finalizeAgentTool()     │
+                    │     提取最终文本             │
+                    │  2. completeAsyncAgent()    │
+                    │     状态 → completed        │
+                    │  3. enqueueAgentNotification│
+                    │     XML 入队列               │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │    消息队列注入主 agent       │
+                    │                             │
+                    │  主 agent 下一轮 tool loop   │
+                    │  → getQueuedCommandAttachments│
+                    │  → 主模型解析 &lt;task-notification&gt;│
+                    │  → 读取 output file / worktree│
+                    └─────────────────────────────┘
                                    │
               ┌────────────────────┼────────────────────┐
               │                    │                    │

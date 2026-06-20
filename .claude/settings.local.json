@@ -18,7 +18,8 @@
       "Bash(mkdir -p /Users/liurui/.claude/apps)",
       "Bash(cp -r /Users/liurui/workspace/learn-claude-code/session-debugger /Users/liurui/.claude/apps/)",
       "Bash(bash /Users/liurui/.claude/apps/session-debugger/hook.sh)",
-      "Bash(lsof -ti:8765)"
+      "Bash(lsof -ti:8765)",
+      "mcp__plugin_claude-mem_mcp-search__smart_outline"
     ]
   }
 }

@@ -91,6 +91,22 @@
   .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
   .card li { margin:2px 0; }
 
+  /* Call chain — matching startup-flow.html style */
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .dot { color:var(--border); margin-right:4px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
   @media (max-width:640px) {
     .hero h1 { font-size:1.2em; }
     .file-ref { flex-direction:column; gap:1px; }
@@ -149,7 +165,76 @@
   <p style="margin:0">没有自动过期机制。陈旧记忆的淘汰靠回忆时的验证——模型被要求在引用记忆中的文件路径/函数名前，先用 grep 确认其仍然存在。冲突则当场更新或删除。</p>
 </div>
 
-<h2>二、触发时机（四条路径）</h2>
+<h2>二、启动与调用流程</h2>
+
+<div class="card">
+  <h3 style="margin-top:0">启动时序：Memory 系统初始化</h3>
+  <div class="call-chain">
+    <div><span class="func">main()</span> <span class="file">[src/main.tsx]</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">setup()</span> <span class="file">[src/setup.ts]</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">initSessionMemory()</span> <span class="file">[setup.ts:294 → sessionMemory.ts:357]</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">registerPostSamplingHook(extractSessionMemory)</span> <span class="comment">— 注册后采样钩子</span></div>
+    <div class="indent-3" style="color:var(--text-dim);font-size:0.9em;">&nbsp;&nbsp;&nbsp;&nbsp;每个模型轮次后触发，更新 <code class="inline">~/.claude/session-memory/&lt;id&gt;.md</code></div>
+
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">startTeamMemoryWatcher()</span> <span class="file">[setup.ts:366, 门控 TEAMMEM]</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> pull 团队记忆 → <span class="func">fs.watch</span> <span class="comment">— 变更时 push 到服务器</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">startBackgroundHousekeeping()</span> <span class="file">[src/utils/backgroundHousekeeping.ts]</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">initExtractMemories()</span> <span class="file">[extractMemories.ts:296, 门控 EXTRACT_MEMORIES]</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 创建闭包状态 (cursor, inProgress, throttle, pendingContext)</div>
+    <div class="indent-3" style="color:var(--text-dim);font-size:0.9em;">&nbsp;&nbsp;&nbsp;&nbsp;为 <code class="inline">executeExtractMemories()</code> 准备好状态</div>
+
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">getSystemPrompt()</span> <span class="file">[src/constants/prompts.ts:495]</span> <span class="comment">— 惰性，首次查询时</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">systemPromptSection('memory', loadMemoryPrompt)</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">loadMemoryPrompt()</span> <span class="file">[src/memdir/memdir.ts:419]</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> KAIROS assistant?  → <span class="func">buildAssistantDailyLogPrompt()</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> TEAMMEM enabled?  → <span class="func">buildCombinedMemoryPrompt()</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> AUTO memory?      → <span class="func">buildMemoryLines()</span></div>
+    <div class="indent-4"><span class="arrow">└─</span> disabled           → <span class="func">null</span></div>
+  </div>
+</div>
+
+<hr class="sep">
+
+<div class="card">
+  <h3 style="margin-top:0">调用时序：每轮 Query Loop 中的记忆触发</h3>
+  <div class="call-chain">
+    <div><span class="func">queryLoop()</span> <span class="file">[src/query.ts]</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">callModel()</span> <span class="comment">— API 调用 → 返回 assistant 消息</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">executePostSamplingHooks()</span> <span class="file">[postSamplingHooks.ts:45]</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">extractSessionMemory()</span> <span class="file">[sessionMemory.ts:272]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 门控: <span class="func">tengu_session_memory</span> GB flag</div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">shouldExtractMemory()</span> <span class="comment">— token 阈值 &amp; tool call 计数</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">setupSessionMemoryFile()</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">runForkedAgent()</span> <span class="comment">— 更新 session-memory 文件</span></div>
+
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">handleStopHooks()</span> <span class="file">[src/query/stopHooks.ts:65]</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">executeExtractMemories()</span> <span class="file">[extractMemories.ts:598]</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">executeExtractMemoriesImpl()</span> <span class="file">[extractMemories.ts:527]</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> 门控: GB flag / autoEnabled / remote mode</div>
+    <div class="indent-4"><span class="arrow">├─</span> inProgress? → stash pendingContext <span class="comment">— 重叠卫士</span></div>
+
+    <div class="indent-4"><span class="arrow">└─</span> <span class="func">runExtraction()</span> <span class="file">[extractMemories.ts:329]</span></div>
+    <div class="indent-5" style="padding-left:90px;"><span class="arrow">├─</span> <span class="func">hasMemoryWritesSince()</span>? → 跳过 <span class="comment">(主 Agent 已写入)</span></div>
+    <div class="indent-5" style="padding-left:90px;"><span class="arrow">├─</span> throttle: turnsSinceLastExtraction &ge; default 1</div>
+    <div class="indent-5" style="padding-left:90px;"><span class="arrow">├─</span> <span class="func">scanMemoryFiles()</span> → <span class="func">formatMemoryManifest()</span></div>
+    <div class="indent-5" style="padding-left:90px;"><span class="arrow">├─</span> <span class="func">buildExtractAutoOnlyPrompt()</span> / <span class="func">buildExtractCombinedPrompt()</span></div>
+    <div class="indent-5" style="padding-left:90px;"><span class="arrow">└─</span> <span class="func">runForkedAgent()</span></div>
+    <div class="indent-5" style="padding-left:110px;"><span class="arrow">├─</span> maxTurns: 5</div>
+    <div class="indent-5" style="padding-left:110px;"><span class="arrow">├─</span> canUseTool: Read + autoMem 路径 Write/Edit only</div>
+    <div class="indent-5" style="padding-left:110px;"><span class="arrow">├─</span> skipTranscript: true <span class="comment">— 共享 prompt cache</span></div>
+    <div class="indent-5" style="padding-left:110px;"><span class="arrow">└─</span> 成功 → advance cursor → notify UI (MemorySavedMessage)</div>
+
+    <div style="margin-top:6px;padding-left:20px;"><span class="arrow">═══</span> 关机 drain <span class="file">[print.ts:968]</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">drainPendingExtraction()</span> <span class="comment">— await inFlightExtractions (timeout: 60s)</span></div>
+  </div>
+</div>
+
+<h2>三、触发时机（四条路径）</h2>
 
 <h3>路径 1：主 Agent 自行写入 <span class="badge badge-green">提示词驱动</span></h3>
 <p>系统提示词中包含完整保存指令（类型分类 + when_to_save + 示例），模型匹配到条件时自主调用 Write/Edit 写入 memory 文件。没有代码逻辑做"该不该写"的判断。</p>
@@ -174,7 +259,7 @@
   <div style="width:56%;background:rgba(63,185,80,0.2);color:var(--green)">Auto Memory 跨session持久</div>
 </div>
 
-<h2>三、决策规则：什么保存，什么不保存</h2>
+<h2>四、决策规则：什么保存，什么不保存</h2>
 
 <h3>四类型分类法</h3>
 <p>每种类型有精确的 <code class="inline">&lt;when_to_save&gt;</code> 和 <code class="inline">&lt;how_to_use&gt;</code>，定义在 <code class="inline">memoryTypes.ts</code>。</p>
@@ -241,7 +326,7 @@
   ▼
 通知 UI (createMemorySavedMessage)</div>
 
-<h2>四、跨 session 持久化 vs 短周期存储</h2>
+<h2>五、跨 session 持久化 vs 短周期存储</h2>
 
 <p>记忆文件写入后<strong>永久保留</strong>在磁盘上。每次新 session 启动时，<code class="inline">loadMemoryPrompt()</code> 读取 <code class="inline">MEMORY.md</code> 索引并注入系统提示词。代码中<strong>没有 TTL、没有自动过期、没有 cron 清理</strong>。</p>
 
@@ -277,7 +362,7 @@
   </tbody>
 </table>
 
-<h2>五、数据流全貌</h2>
+<h2>六、数据流全貌</h2>
 <div class="flow">                          新 Session 启动
                                 │
           ┌─────────────────────┼─────────────────────┐
@@ -335,7 +420,7 @@
           │  └─ 修剪 MEMORY.md 索引         │
           ═══════════════════════════════════</div>
 
-<h2>六、系统提示词内容</h2>
+<h2>七、系统提示词内容</h2>
 
 <p>以下是从源码中提取的完整提示词内容，展示系统如何向 LLM 描述记忆机制。</p>
 
@@ -834,7 +919,7 @@ Update `MEMORY.md` so it stays under 200 lines AND under ~25KB. It's an
 Return a brief summary of what you consolidated, updated, or pruned. If
 nothing changed (memories are already tight), say so.</div>
 
-<h2>七、代码引用索引</h2>
+<h2>八、代码引用索引</h2>
 
 <h3>核心层 — 提示词构建与路径解析</h3>
 <div class="file-ref"><span class="path">src/memdir/memoryTypes.ts</span><span class="role">四种记忆类型的 XML 定义（description / when_to_save / how_to_use / 示例）、WHAT_NOT_TO_SAVE_SECTION、WHEN_TO_ACCESS_SECTION、TRUSTING_RECALL_SECTION、MEMORY_FRONTMATTER_EXAMPLE</span></div>
@@ -879,7 +964,7 @@ nothing changed (memories are already tight), say so.</div>
 <div class="file-ref"><span class="path">src/components/MemoryUsageIndicator.tsx</span><span class="role">记忆用量指示器</span></div>
 <div class="file-ref"><span class="path">src/setup.ts</span><span class="role">initSessionMemory() 注册 session memory hook (line 294)；startTeamMemoryWatcher() 启动团队同步 (line 366)</span></div>
 
-<h2>八、总结</h2>
+<h2>九、总结</h2>
 
 <div class="card">
   <p style="margin:0 0 4px">设计哲学：<strong>"让 LLM 做分类决策，代码只做基础设施。"</strong></p>

@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 学习笔记 — 19 章代码与架构全解</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5faf6; color: #2d3a31; font-size: 13px; line-height: 1.45; padding: 20px; }
+  h1 { font-size: 1.5em; margin-bottom: 8px; color: #1a3a25; border-bottom: 3px solid #2d8f5e; padding-bottom: 6px; }
+  h2 { font-size: 1.2em; margin: 18px 0 8px; color: #1a5a35; border-left: 4px solid #5cb885; padding-left: 10px; }
+  h3 { font-size: 1.02em; margin: 12px 0 4px; color: #2d6a3f; }
+  h4 { font-size: 0.95em; margin: 8px 0 3px; color: #3a7a4f; }
+  p, li { margin: 3px 0; }
+  ul, ol { padding-left: 18px; }
+  .stage-card { background: #e8f5ec; border: 1px solid #c3dbcc; border-radius: 8px; padding: 14px; margin: 14px 0; }
+  .stage-card h2 { margin-top: 0; border-left-color: #2d8f5e; }
+  .chapter { background: #fff; border: 1px solid #d4e6dc; border-radius: 6px; padding: 10px 12px; margin: 6px 0; }
+  .chapter h3 { margin-top: 0; }
+  .summary { background: #f0f8f2; border: 1px solid #c3dbcc; border-radius: 4px; padding: 6px 10px; margin: 6px 0; font-size: 0.92em; }
+  .key { color: #b87333; font-weight: 600; }
+  .code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; background: #eef3ef; padding: 1px 4px; border-radius: 3px; font-size: 0.88em; }
+  pre { background: #e8efe9; border: 1px solid #c3dbcc; border-radius: 5px; padding: 10px; overflow-x: auto; font-size: 0.8em; line-height: 1.3; margin: 6px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
+  th, td { border: 1px solid #c3dbcc; padding: 4px 8px; text-align: left; }
+  th { background: #dceee2; font-weight: 600; }
+  tr:nth-child(even) { background: #f0f8f2; }
+  .flow-arrow { color: #5cb885; font-weight: bold; }
+  .tag { display: inline-block; background: #d4e6dc; border-radius: 3px; padding: 1px 6px; font-size: 0.82em; margin-right: 3px; }
+  .tag-rule { background: #fce4d6; border: 1px solid #e8b89a; }
+  .tag-alert { background: #fff3cd; border: 1px solid #ffc107; }
+  .note { background: #f0f0f0; border-left: 3px solid #888; padding: 4px 8px; margin: 4px 0; font-size: 0.9em; }
+  @media (max-width: 600px) { body { padding: 10px; } }
+</style>
+</head>
+<body>
+
+<h1>🤖 Agent 系统学习笔记</h1>
+<p style="margin-bottom:12px;">基于 <code>agents/</code> 源代码 (s01–s19) + <code>docs/zh/</code> 中文文档 — 4 阶段 19 章全解</p>
+
+<!-- ============================== 总览 ============================== -->
+<h2>📋 系统总览</h2>
+<div class="stage-card">
+  <table>
+    <tr><th>阶段</th><th>章节</th><th>核心主题</th><th>新增关键结构</th></tr>
+    <tr><td><strong>1</strong></td><td>s01–s06</td><td>核心单 Agent</td><td>LoopState, ToolDispatch, TodoItem, SubagentContext, SkillRegistry, CompactSummary</td></tr>
+    <tr><td><strong>2</strong></td><td>s07–s11</td><td>生产加固</td><td>PermissionRule, HookEvent, MemoryEntry, PromptParts, RecoveryState</td></tr>
+    <tr><td><strong>3</strong></td><td>s12–s14</td><td>任务管理</td><td>TaskRecord, RuntimeTaskState, ScheduleRecord</td></tr>
+    <tr><td><strong>4</strong></td><td>s15–s19</td><td>多 Agent &amp; 外部系统</td><td>TeamMember, ProtocolEnvelope, AutonomyState, WorktreeRecord, MCPServerConfig</td></tr>
+  </table>
+  <div class="summary">
+    <strong>核心脉络：</strong>
+    <span class="code">messages[] → LLM → tool_use → execute → tool_result → messages[] → 下一轮</span>
+    <br>所有章节都是在这个循环上叠加新的层：工具路由、规划、隔离、权限、扩展点、持久化、协作、外部能力。
+  </div>
+</div>
+
+<!-- ============================== 图：主循环 ============================== -->
+<h2>🎯 Agent Loop 核心图</h2>
+<div class="stage-card" style="text-align:center;">
+<pre style="display:inline-block;text-align:left;">
+User Input
+    |
+    v
+┌───────────────────────────────────┐
+│  Agent Loop                       │
+│  1. 组装 System Prompt + messages │
+│  2. 调用 LLM                      │
+│  3. 检查 stop_reason              │
+│     ├── end_turn → 输出结果        │
+│     ├── max_tokens → 恢复策略(s11) │
+│     └── tool_use → 执行工具        │
+│  4. 权限检查 (s07)                │
+│  5. Hook 前置 (s08)              │
+│  6. 执行工具                      │
+│  7. Hook 后置 (s08)              │
+│  8. tool_result 写回 messages     │
+│  9. 继续下一轮                    │
+└───────────────────────────────────┘
+    │
+    ├── 规划 & 子任务: Todo(s03), Tasks(s12), Subagent(s04)
+    ├── 上下文管理: Compact(s06), Memory(s09), Prompt(s10)
+    ├── 后台 & 定时: Background(s13), Cron(s14)
+    └── 团队 & 外部: Teams(s15-17), Worktree(s18), MCP(s19)
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<!-- 阶段 1 -->
+<!-- ============================================================ -->
+<h2>📘 阶段一：核心单 Agent (s01–s06)</h2>
+<div class="stage-card">
+
+<div class="chapter">
+<h3>s01 — Agent Loop <span class="tag">基础循环</span></h3>
+<div class="summary"><strong>核心思想：</strong>没有循环，就没有 agent。把"模型 + 工具"连接成一个能持续推进任务的主循环。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/startup-flow.html" style="color:#2d8a4e;">Claude Code 启动函数调用图</a> — main() 到 SessionStart 完整链路</div></div>
+<table>
+  <tr><th>文件</th><td><code>s01_agent_loop.py</code></td></tr>
+  <tr><th>关键结构</th><td><span class="code">LoopState</span> — messages, turn_count, transition_reason</td></tr>
+  <tr><th>终止条件</th><td><span class="code">response.stop_reason != "tool_use"</span> 时结束</td></tr>
+  <tr><th>工具</th><td>仅 <code>bash</code> — 最小演示</td></tr>
+</table>
+<pre>
+def agent_loop(state):
+    while True:
+        response = client.messages.create(model=MODEL, system=SYSTEM, messages=state.messages, tools=TOOLS)
+        state.messages.append({"role": "assistant", "content": response.content})
+        if response.stop_reason != "tool_use": return
+        results = execute_tool_calls(response.content)  # 执行工具
+        state.messages.append({"role": "user", "content": results})
+        state.turn_count += 1</pre>
+<ul>
+  <li><span class="key">关键理解：</span>assistant 回复要写回历史，tool_result 要写回历史，主循环持续推进</li>
+  <li><span class="key">初学者常犯：</span>工具结果只打印不写回 messages、不保存 assistant 消息、不给 tool_result 绑定 tool_use_id</li>
+  <li><span class="code">transition_reason</span> 目前只有 <code>"tool_result"</code>，后续会扩展更多续行原因</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s02 — Tool Use <span class="tag">工具路由</span></h3>
+<div class="summary"><strong>核心思想：</strong>loop 没有变，只是加了更多工具。通过 dispatch map 把模型意图路由成真实动作。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/tool-system-study.html" style="color:#2d8a4e;">Tool 系统设计分析</a> — 50+ 工具分类、注册机制、执行流水线</div></div>
+<table>
+  <tr><th>文件</th><td><code>s02_tool_use.py</code></td></tr>
+  <tr><th>关键结构</th><td><span class="code">TOOL_HANDLERS</span> — {tool_name: handler_fn} 调度表</td></tr>
+  <tr><th>新增工具</th><td>bash, read_file, write_file, edit_file — 4 个基础工具</td></tr>
+</table>
+<pre>
+TOOL_HANDLERS = {
+    "bash":       lambda **kw: run_bash(kw["command"]),
+    "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
+    "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
+    "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+}
+# 在 agent_loop 中使用：
+handler = TOOL_HANDLERS.get(block.name)
+output = handler(**block.input) if handler else f"Unknown tool: {block.name}"</pre>
+<ul>
+  <li><span class="key">并发安全分类：</span><span class="code">CONCURRENCY_SAFE</span> (read_file) vs <span class="code">CONCURRENCY_UNSAFE</span> (write_file, edit_file)</li>
+  <li><span class="code">normalize_messages()</span> — 清洗 metadata、补全孤儿 tool_use 的占位结果、合并连续同角色消息</li>
+  <li><code>safe_path</code> 防止路径逃逸出工作区</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s03 — Todo / Planning <span class="tag">会话内规划</span></h3>
+<div class="summary"><strong>核心思想：</strong>让 agent 按步骤推进，而不是乱撞。模型可以通过 todo 工具重写当前会话计划。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/todo-write-analysis.html" style="color:#2d8a4e;">TodoWrite API 工具定义分析</a> — 真实 CC 中 TodoWrite 作为完整的 API 工具通过 tools[] 参数发送给模型</div></div>
+<table>
+  <tr><th>文件</th><td><code>s03_todo_write.py</code></td></tr>
+  <tr><th>关键类</th><td><span class="code">TodoManager</span> — 管理 PlanItem (content, status, activeForm)</td></tr>
+  <tr><th>关键常量</th><td><code>PLAN_REMINDER_INTERVAL = 3</code> — 3 轮未更新计划则提醒</td></tr>
+</table>
+<pre>
+@dataclass
+class PlanItem:
+    content: str
+    status: str = "pending"    # pending / in_progress / completed
+    active_form: str = ""      # 如 "Fixing auth bug"
+
+# TodoManager.update() 验证：
+# - 最多 12 项
+# - 只能有一个 in_progress
+# - 自动重置 rounds_since_update</pre>
+<ul>
+  <li>模型通过 <code>todo</code> 工具在 <code>@</code> 更新计划；计划完成后自动计算已完成/总数</li>
+  <li>如果多轮未更新计划，注入 <code>&lt;reminder&gt;</code> 提示</li>
+  <li>TodoManager 在内存中维护计划状态，独立于对话消息 — 这是"外显计划状态"的核心模式</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s04 — Subagent <span class="tag">上下文隔离</span></h3>
+<div class="summary"><strong>核心思想：</strong>子 agent 用全新的 messages=[] 执行，父 context 保持干净。共享文件系统但不共享对话历史。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/subagent-analysis.html" style="color:#2d8a4e;">Subagent 后端架构与上下文隔离分析</a> — 5 种子 agent 后端、createSubagentContext 隔离约 20 个字段</div></div>
+<table>
+  <tr><th>文件</th><td><code>s04_subagent.py</code></td></tr>
+  <tr><th>关键函数</th><td><code>run_subagent(prompt)</code> — 新上下文 + 子集工具 + 安全上限 30 轮</td></tr>
+  <tr><th>AgentTemplate</th><td>解析 <code>.claude/agents/*.md</code> 的 YAML frontmatter 定义</td></tr>
+</table>
+<pre>
+# 子 agent：清除上下文 + 过滤工具
+def run_subagent(prompt: str) -> str:
+    sub_messages = [{"role": "user", "content": prompt}]  # 全新上下文
+    for _ in range(30):  # 安全上限
+        # ... 同标准 loop，但用 CHILD_TOOLS（不含 task 工具，防止递归）
+    return "".join(b.text for b in response.content if hasattr(b, "text"))  # 仅返回摘要</pre>
+<ul>
+  <li>父 agent 增加 <code>task</code> 工具用于派发子任务</li>
+  <li>子 agent 只返回最终文本摘要给父 agent，子上下文被丢弃</li>
+  <li>真实 Claude Code: 5 种后端 (in-process, tmux, iTerm2, fork, remote)，<code>createSubagentContext()</code> 隔离约 20 个字段</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s05 — Skill Loading <span class="tag">按需知识</span></h3>
+<div class="summary"><strong>核心思想：</strong>两层技能模型 — 轻量目录放在 system prompt 里，完整技能体按需加载。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/tool-system-study.html" style="color:#2d8a4e;">Tool 系统设计分析 (Skill 部分)</a> — Skill 作为内置核心工具注册（SkillTool + ToolSearch 延迟加载）</div></div>
+<table>
+  <tr><th>文件</th><td><code>s05_skill_loading.py</code></td></tr>
+  <tr><th>关键类</th><td><span class="code">SkillRegistry</span> 扫描 <code>skills/</code> 目录下的 SKILL.md</td></tr>
+  <tr><th>工具</th><td><code>load_skill</code> — 按名称加载完整技能内容</td></tr>
+</table>
+<pre>
+class SkillRegistry:
+    # 扫描 skills/ 下所有 SKILL.md
+    # 解析 frontmatter 获取 name + description
+    # describe_available() → 轻量目录注入 system prompt
+    # load_full_text(name) → 按需加载完整 body 到 context
+
+SYSTEM = f"""...
+Skills available:
+{SKILL_REGISTRY.describe_available()}  # 只有名称和摘要
+"""</pre>
+<ul>
+  <li>保持 system prompt 小，只在模型请求时才加载完整技能</li>
+  <li>SKILL.md 使用 ---frontmatter--- 格式：name, description 等元数据</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s06 — Context Compact <span class="tag">上下文压缩</span></h3>
+<div class="summary"><strong>核心思想：</strong>三种策略保持上下文窗口小而有效：大输出持久化、旧结果微压缩、整体对话摘要。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/context-compaction-study.html" style="color:#2d8a4e;">上下文压缩实现分析</a> — Compact Service 模块结构、策略选择、token 节省计算</div></div>
+<table>
+  <tr><th>文件</th><td><code>s06_context_compact.py</code></td></tr>
+  <tr><th>关键常量</th><td><code>CONTEXT_LIMIT=50000, PERSIST_THRESHOLD=30000, KEEP_RECENT_TOOL_RESULTS=3</code></td></tr>
+  <tr><th>工具</th><td><code>compact</code> — 手动触发压缩</td></tr>
+</table>
+<pre>
+# 1. 大输出持久化 (>30KB → 存文件 + 预览标记)
+def persist_large_output(tool_use_id, output):
+    stored_path = TOOL_RESULTS_DIR / f"{tool_use_id}.txt"
+    # 替换为: <persisted-output>Full output saved to: ... Preview: ...</persisted-output>
+
+# 2. 微压缩: 只保留最近 KEEP_RECENT_TOOL_RESULTS 条完整结果
+def micro_compact(messages):
+    # 旧结果替换为 "[Earlier tool result compacted. Re-run if needed.]"
+
+# 3. 整体摘要: 用 LLM 总结 → 替换为单条 user message
+def compact_history(messages, state, focus=None):
+    summary = summarize_history(messages)  # LLM 生成摘要
+    return [{"role": "user", "content": f"This conversation was compacted...\n{summary}"}]</pre>
+<ul>
+  <li>自动压缩在每轮开始前检查 <code>estimate_context_size</code> 是否超过阈值</li>
+  <li>压缩前保存 transcript 到 <code>.transcripts/</code></li>
+  <li><code>CompactState</code> 记录是否压缩过、最近文件列表</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- 阶段 2 -->
+<!-- ============================================================ -->
+<h2>📘 阶段二：生产加固 (s07–s11)</h2>
+<div class="stage-card">
+
+<div class="chapter">
+<h3>s07 — Permission System <span class="tag">安全管道</span></h3>
+<div class="summary"><strong>核心思想：</strong>安全是一个管道，不是一个布尔值。每次工具调用经过 4 步决策：拒绝规则 → 模式检查 → 允许规则 → 询问用户。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/permission-system-analysis.html" style="color:#2d8a4e;">Permission 系统设计分析</a> — 初始化流程、7 步决策流水线、交互审批、Auto 模式分类器完整架构</div></div>
+<table>
+  <tr><th>文件</th><td><code>s07_permission_system.py</code></td></tr>
+  <tr><th>关键类</th><td><span class="code">PermissionManager</span> — 管理规则和决策管道</td></tr>
+  <tr><th>模式</th><td><code>default</code> / <code>plan</code> (只读) / <code>auto</code> (读自动允许，写询问)</td></tr>
+  <tr><th>额外</th><td><code>BashSecurityValidator</code> — 正则检测危险命令</td></tr>
+</table>
+<pre>
+# 权限管道：
+# 1. Bash security validator (提前检查危险命令)
+# 2. Deny rules (不可绕过)
+# 3. Mode check (plan=只读, auto=读自动放行)
+# 4. Allow rules (匹配则放行)
+# 5. Ask user (默认行为)
+
+decision = perms.check(block.name, block.input or {})
+if decision["behavior"] == "deny":   # 拒绝
+elif decision["behavior"] == "ask":  # 询问用户
+    if perms.ask_user(...):          # 执行
+    else:                            # 用户拒绝
+else:                                # allow, 执行</pre>
+<ul>
+  <li><span class="code">ask_user</span> 支持 <code>y/n/always</code> — "always" 添加永久允许规则</li>
+  <li>连续拒绝追踪 (consecutive_denials) — 超过 3 次提示切换到 plan 模式</li>
+  <li>运行时 <code>/mode</code> 命令切换权限模式；<code>/rules</code> 显示当前规则</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s08 — Hook System <span class="tag">扩展点</span></h3>
+<div class="summary"><strong>核心思想：</strong>不改主循环也能插入扩展逻辑。三个钩子事件：SessionStart, PreToolUse, PostToolUse。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/hook-system-analysis.html" style="color:#2d8a4e;">Hook 系统设计分析</a> — 27 个 Hook 事件 × 4 种执行类型、配置合并与初始化、执行引擎完整架构</div></div>
+<table>
+  <tr><th>文件</th><td><code>s08_hook_system.py</code></td></tr>
+  <tr><th>关键类</th><td><span class="code">HookManager</span> — 从 .hooks.json 配置加载和执行钩子</td></tr>
+  <tr><th>退出码约定</th><td>0=继续, 1=阻止, 2=注入消息</td></tr>
+</table>
+<pre>
+# hooks.json 格式:
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "bash", "command": "echo 'checking...'"}
+    ],
+    "PostToolUse": [],
+    "SessionStart": []
+  }
+}
+
+# 钩子执行流程:
+pre_result = hooks.run_hooks("PreToolUse", ctx)
+if pre_result.get("blocked"):  # returncode 1
+    # 返回阻止消息
+    continue
+# 执行工具
+output = handler(**tool_input)
+ctx["tool_output"] = output
+post_result = hooks.run_hooks("PostToolUse", ctx)</pre>
+<ul>
+  <li>钩子通过环境变量 HOOK_EVENT, HOOK_TOOL_NAME, HOOK_TOOL_INPUT 等接收上下文</li>
+  <li>结构化 stdout (JSON) 可以修改 tool_input、注入 additionalContext、覆盖 permissionDecision</li>
+  <li>SDK 模式跳过工作区信任检查</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s09 — Memory System <span class="tag">跨会话记忆</span></h3>
+<div class="summary"><strong>核心思想：</strong>只存跨会话有价值且不易从代码重新推导的信息。每轮重建 system prompt 包含记忆。
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../../claude-code/notes/memory-system-analysis.html" style="color:#2d8a4e;">Memory 系统设计分析</a> — 记忆类型、.MEMORY.md 索引、DreamConsolidator、LLM 提取流程</div></div>
+<table>
+  <tr><th>文件</th><td><code>s09_memory_system.py</code></td></tr>
+  <tr><th>存储布局</th><td><code>.memory/*.md</code> — 每个记忆一个带 frontmatter 的 Markdown 文件</td></tr>
+  <tr><th>记忆类型</th><td><code>user</code> (偏好), <code>feedback</code> (纠正), <code>project</code> (项目事实), <code>reference</code> (外部资源)</td></tr>
+</table>
+<pre>
+# 保存记忆 → 持久化 .md 文件 → 重建 MEMORY.md 索引
+def save_memory(name, description, mem_type, content):
+    # .memory/{safe_name}.md
+    # ---
+    # name: {name}
+    # description: {description}
+    # type: {mem_type}
+    # ---
+    # {content}
+
+# 记忆注入: load_memory_prompt() → 按类型分组 → 插入 system prompt
+# 不要在记忆里存: 代码结构、临时任务状态、密钥</pre>
+<ul>
+  <li><code>DreamConsolidator</code> 可选"梦境"阶段：7 道门控检查 (24h 冷却、10min 节流、5 session 最小数、PID 锁等)</li>
+  <li>每轮 LLM 调用前重建 system prompt，新保存的记忆立即可见</li>
+  <li><code>MEMORY.md</code> 索引最多 200 行</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s10 — System Prompt <span class="tag">提示词管道</span></h3>
+<div class="summary"><strong>核心思想：</strong>system prompt 是从多个独立部分组装的管道，不是一个大字符串。用 DYNAMIC_BOUNDARY 分隔静态/动态部分。</div>
+<table>
+  <tr><th>文件</th><td><code>s10_system_prompt.py</code></td></tr>
+  <tr><th>关键类</th><td><span class="code">SystemPromptBuilder</span> — 6 个构建方法</td></tr>
+  <tr><th>边界标记</th><td><code>"=== DYNAMIC_BOUNDARY ==="</code></td></tr>
+</table>
+<pre>
+# Prompt 组装管道（6 个 section）：
+# 1. _build_core()        → 核心指令 (你是谁、你在哪)
+# 2. _build_tool_listing() → 可用工具列表
+# 3. _build_skill_listing() → 技能目录
+# 4. _build_memory_section() → 持久记忆
+# 5. _build_claude_md()    → CLAUDE.md 链 (用户全局 → 项目 → 子目录)
+# 6. (BOUNDARY)           → === DYNAMIC_BOUNDARY ===
+# 7. _build_dynamic_context() → 当前日期、工作目录、模型、平台
+
+# System reminder (每轮动态):
+def build_system_reminder(extra):
+    # <system-reminder>
+    # {extra}
+    # </system-reminder>
+    # 作为 user 角色消息注入
+    pass</pre>
+<ul>
+  <li>静态部分 (1-5) 在生产中可缓存以节省 token；动态部分 (6-7) 每轮更新</li>
+  <li><code>system-reminder</code> 作为 user 角色消息注入，不混入稳定 prompt</li>
+  <li>CLAUDE.md 链：用户全局 → 项目根 → 当前子目录，优先级递增</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s11 — Error Recovery <span class="tag">错误恢复</span></h3>
+<div class="summary"><strong>核心思想：</strong>三种恢复路径：max_tokens 后继续、prompt_too_long 后压缩重试、网络错误后指数退避。</div>
+<table>
+  <tr><th>文件</th><td><code>s11_error_recovery.py</code></td></tr>
+  <tr><th>恢复优先级</th><td>max_tokens → prompt_too_long → connection error → 优雅失败</td></tr>
+</table>
+<pre>
+# Strategy 1: max_tokens → 注入续行消息重试
+if response.stop_reason == "max_tokens":
+    messages.append({"role": "user", "content": CONTINUATION_MESSAGE})
+    continue  # 重试，最多 MAX_RECOVERY_ATTEMPTS (3) 次
+
+# Strategy 2: prompt_too_long → 压缩重试
+if "overlong_prompt" in str(e):
+    messages[:] = auto_compact(messages)
+    continue
+
+# Strategy 3: 指数退避重试 (connection/rate errors)
+delay = min(BACKOFF_BASE_DELAY * (2 ** attempt), BACKOFF_MAX_DELAY) + random(0, 1)
+
+# 主动压缩：token 估计超阈值时自动压缩
+if estimate_tokens(messages) > TOKEN_THRESHOLD:
+    messages[:] = auto_compact(messages)</pre>
+<ul>
+  <li><code>max_output_recovery_count</code> 追踪连续 max_tokens 恢复次数</li>
+  <li>成功的非 max_tokens 响应会重置计数器</li>
+  <li><code>auto_compact()</code> 用 LLM 摘要压缩历史，模型独立调用（不污染主 messages）</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- 阶段 3 -->
+<!-- ============================================================ -->
+<h2>📘 阶段三：任务管理 (s12–s14)</h2>
+<div class="stage-card">
+
+<div class="chapter">
+<h3>s12 — Task System <span class="tag">持久任务图</span></h3>
+<div class="summary"><strong>核心思想：</strong>任务以 JSON 文件持久化在 <code>.tasks/</code> 中，带依赖关系图。TaskRecord ≠ 运行时执行槽。</div>
+<table>
+  <tr><th>文件</th><td><code>s12_task_system.py</code></td></tr>
+  <tr><th>关键类</th><td><span class="code">TaskManager</span> — CRUD for persistent task graph</td></tr>
+  <tr><th>任务状态</th><td>pending, in_progress, completed, deleted</td></tr>
+</table>
+<pre>
+# .tasks/task_{id}.json:
+{
+  "id": 1,
+  "subject": "Implement auth",
+  "description": "...",
+  "status": "pending",
+  "blockedBy": [],
+  "blocks": [2],
+  "owner": ""
+}
+
+# 依赖解析：task 1 完成 → 自动从所有 task 的 blockedBy 中移除 1
+# 注意：这里是通过文件系统持久化的，context 压缩不会丢失任务</pre>
+<ul>
+  <li>工具：<code>task_create, task_update, task_list, task_get</code></li>
+  <li><code>update()</code> 双向维护依赖：task[A].blocks = [B] 时自动将 A 加入 B.blockedBy</li>
+  <li>教学边界：这章只教持久的工件图，运行时执行槽和调度器在后续章节</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s13 — Background Tasks <span class="tag">后台执行</span></h3>
+<div class="summary"><strong>核心思想：</strong>后台线程运行慢命令，主循环在每次 LLM 调用前 drain 通知队列，注入完成结果。</div>
+<table>
+  <tr><th>文件</th><td><code>s13_background_tasks.py</code></td></tr>
+  <tr><th>关键类</th><td><code>BackgroundManager</code> — 线程化执行 + 通知队列</td></tr>
+  <tr><th>关键常量</th><td><code>STALL_THRESHOLD_S = 45</code> — 僵死检测</td></tr>
+</table>
+<pre>
+# 启动后台任务 → 立即返回 task_id
+bg.run("npm run build") → "Background task a1b2c3d4 started: npm run build"
+
+# 主循环 drain 通知:
+def agent_loop(messages):
+    while True:
+        notifs = BG.drain_notifications()
+        if notifs:
+            messages.append({"role": "user", "content": f"&lt;background-results&gt;\n{...}\n&lt;/background-results&gt;"})
+        # ... 正常 LLM 调用
+
+# 通知队列支持优先级 + same-key folding (新消息替换旧消息)</pre>
+<ul>
+  <li>后台任务是运行时执行槽，不是 s12 的持久工作图记录 — 两者是不同的概念</li>
+  <li>输出写入 <code>.runtime-tasks/{task_id}.log</code>，结果在后台线程中捕获后推入队列</li>
+  <li><code>detect_stalled()</code> 检测运行超过 45 秒的僵死任务</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s14 — Cron Scheduler <span class="tag">定时调度</span></h3>
+<div class="summary"><strong>核心思想：</strong>agent 可以用标准 cron 表达式安排未来工作。时间触发器把提醒注回主循环。</div>
+<table>
+  <tr><th>文件</th><td><code>s14_cron_scheduler.py</code></td></tr>
+  <tr><th>关键类</th><td><code>CronScheduler</code> — 后台线程每秒检查，每分钟匹配</td></tr>
+  <tr><th>持久性</th><td>session-only (内存) / durable (.claude/scheduled_tasks.json)</td></tr>
+  <tr><th>触发模式</th><td>recurring (7 天过期) / one-shot (触发后删除)</td></tr>
+</table>
+<pre>
+# Cron expression: 5 fields (min hour dom month dow)
+# "*/5 * * * *" → 每 5 分钟
+# "0 9 * * 1"   → 周一 9:00
+
+# 架构:
+# [CronScheduler 后台线程] → 每秒校验时间
+#   → [notification_queue]
+#   → [agent_loop 每轮 drain 并注入为 user message]
+
+# PID 锁防止多个 session 触发同一 cron job
+# 自动避开 :00 和 :30 的精确分钟边界（加 1-4 分钟抖动）</pre>
+<ul>
+  <li>后台线程每秒检查，但每分钟只触发一次匹配（避免同一分钟内重复触发）</li>
+  <li><code>detect_missed_tasks()</code> 启动时检测 session 关闭期间错过的定时任务</li>
+  <li>7 天自动过期防止无限累积</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<!-- 阶段 4 -->
+<!-- ============================================================ -->
+<h2>📘 阶段四：多 Agent &amp; 外部系统 (s15–s19)</h2>
+<div class="stage-card">
+
+<div class="chapter">
+<h3>s15 — Agent Teams <span class="tag">团队邮箱</span></h3>
+<div class="summary"><strong>核心思想：</strong>持久命名的 agent 通过文件级 JSONL 收件箱通信。每个队友在自己的线程中独立运行 agent loop。</div>
+<table>
+  <tr><th>文件</th><td><code>s15_agent_teams.py</code></td></tr>
+  <tr><th>关键结构</th><td><code>.team/config.json</code> 记录成员, <code>.team/inbox/{name}.jsonl</code> 邮箱</td></tr>
+  <tr><th>msg_type</th><td>message, broadcast, shutdown_request, shutdown_response, plan_approval, plan_approval_response</td></tr>
+</table>
+<pre>
+# Subagent (s04): spawn → execute → return summary → 销毁
+# Teammate (s15): spawn → work → idle → work → ... → 持续存活
+
+# MessageBus: append-only JSONL 收件箱
+# send("alice", "Fix bug") → .team/inbox/alice.jsonl 追加一行
+# read_inbox("alice")      → 读取所有消息并清空文件
+
+# TeammateManager.spawn() → 创建线程 → 独立 agent_loop
+# 队友工具: send_message, read_inbox (不暴露 spawn_teammate, 防止递归)</pre>
+<ul>
+  <li>Lead 有 9 个工具：4 个基础 + spawn_teammate + list_teammates + send_message + read_inbox + broadcast</li>
+  <li>队友在 <code>.team/config.json</code> 中有 name, role, status</li>
+  <li>消息是 JSONL 格式（每行一个 JSON 对象），append-only 写入，读取时 drain</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s16 — Team Protocols <span class="tag">结构化握手</span></h3>
+<div class="summary"><strong>核心思想：</strong>两个协议（关闭、计划审批）共用同一 request_id 关联模式。协议请求是结构化工作流对象，不是自由聊天。</div>
+<table>
+  <tr><th>文件</th><td><code>s16_team_protocols.py</code></td></tr>
+  <tr><th>关键结构</th><td><code>.team/requests/{request_id}.json</code> — 持久化请求记录</td></tr>
+  <tr><th>协议 FSM</th><td>pending → approved | rejected</td></tr>
+</table>
+<pre>
+# 关闭协议:                        # 计划审批协议:
+# Lead → shutdown_request           # Teammate → plan_approval
+# Teammate → shutdown_response      # Lead → plan_approval_response
+#          ↑                               ↑
+#     request_id = "abc"              request_id = "def"
+#     关联请求/响应                   关联请求/响应
+
+# RequestStore.create/get/update → 持久化到 .team/requests/{id}.json
+# 协议状态存活在磁盘上，可以被检查、恢复或核对</pre>
+<ul>
+  <li>Lead 增加到 12 个工具（新增 shutdown_request, shutdown_response[检查], plan_approval[审核]）</li>
+  <li>队友的 shutdown_response 带 approve boolean，收到 approve=true 则 should_exit=True</li>
+  <li>计划审批：队友提交 plan_text → Lead 通过 request_id 审批/拒绝 → 反馈回队友</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s17 — Autonomous Agents <span class="tag">自治调度</span></h3>
+<div class="summary"><strong>核心思想：</strong>空闲周期轮询任务板和收件箱，自动认领未分配任务，压缩后重注入身份。</div>
+<table>
+  <tr><th>文件</th><td><code>s17_autonomous_agents.py</code></td></tr>
+  <tr><th>生命周期</th><td>spawn → WORK (tool_use loop) → IDLE (60s 超时) → 自检/认领 → WORK → shutdown</td></tr>
+  <tr><th>空闲检测</th><td>模型主动调用 <code>idle</code> 工具进入空闲轮询阶段</td></tr>
+</table>
+<pre>
+# 空闲阶段 (IDLE_PHASE):
+# 1. sleep(POLL_INTERVAL=5s)
+# 2. 读取收件箱 → 有消息则 resume
+# 3. 扫描 .tasks/ → 检查可认领任务 (pending + 无 owner + 无 blockedBy + 角色匹配)
+# 4. 认领 → 注入任务信息到 messages → resume
+# 5. 60s 无活动 → shutdown
+
+# 身份重注入:
+def ensure_identity_context(messages, name, role, team_name):
+    # 如果 context 压缩后优先级 identity block 丢失, 在 messages[0] 插入:
+    # {"role": "user", "content": "&lt;identity&gt;You are '{name}', role: {role}, team: {team_name}.&lt;/identity&gt;"}
+
+# 认领竞争保护: _claim_lock + is_claimable_task() 双重检查</pre>
+<ul>
+  <li>认领事件记录到 <code>claim_events.jsonl</code>，用于审计</li>
+  <li>支持 <code>claim_role</code> 过滤 — 只有角色匹配的队友才能认领</li>
+  <li>Lead 工具扩大到 14 个（新增 idle, claim_task）</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s18 — Worktree Isolation <span class="tag">目录隔离</span></h3>
+<div class="summary"><strong>核心思想：</strong>任务是控制面，worktree 是执行面。用 git worktree 为并行任务分配独立工作目录。</div>
+<table>
+  <tr><th>文件</th><td><code>s18_worktree_task_isolation.py</code></td></tr>
+  <tr><th>关键结构</th><td><code>.worktrees/index.json</code> — worktree 注册表</td></tr>
+  <tr><th>绑定模型</th><td>task → worktree_name (task["worktree"] + task["worktree_state"])</td></tr>
+</table>
+<pre>
+# WorktreeManager:
+# - create(name, task_id, base_ref) → git worktree add -b wt/{name} {path} {base_ref}
+# - run(name, command) → 在 worktree 目录执行命令
+# - status(name) → git status --short --branch
+# - closeout(name, action, ...) → keep (保留) / remove (删除)
+# - remove(name, ...) → git worktree remove
+
+# 事件总线: .worktrees/events.jsonl (append-only 生命周期事件)
+#         → worktree.create.before / create.after / create.failed
+#         → run.before / run.after / run.timeout
+#         → remove.before / remove.after / remove.failed</pre>
+<ul>
+  <li>分支命名约定: <code>wt/{name}</code>，worktree 路径: <code>.worktrees/{name}/</code></li>
+  <li>TaskManager 增加 worktree 相关字段: worktree, worktree_state, closeout, last_worktree</li>
+  <li>教学边界：不涉及跨机器执行、合并自动化和企业策略</li>
+</ul>
+</div>
+
+<div class="chapter">
+<h3>s19 — MCP &amp; Plugin <span class="tag">外部能力层</span></h3>
+<div class="summary"><strong>核心思想：</strong>外部进程可以暴露工具，agent 经过少量标准化后像原生工具一样使用它们。MCP 不绕过控制面。</div>
+<table>
+  <tr><th>文件</th><td><code>s19_mcp_plugin.py</code></td></tr>
+  <tr><th>关键类</th><td>MCPClient, PluginLoader, MCPToolRouter, CapabilityPermissionGate</td></tr>
+  <tr><th>命名约定</th><td><code>mcp__{server}__{tool}</code> — 前缀路由</td></tr>
+</table>
+<pre>
+# 最小 MCP 路径:
+# 1. PluginLoader.scan() → 找到 .claude-plugin/plugin.json 清单
+# 2. 提取 mcpServers 配置 → 创建 MCPClient
+# 3. MCPClient.connect() → 通过 stdio 启动子进程
+# 4. MCPClient.list_tools() → 获取外部工具列表
+# 5. MCPToolRouter.get_all_tools() → 合并到统一工具池
+
+# CapabilityPermissionGate:
+# - normalize() → 统一化为 intent: {source, server, tool, risk}
+# - risk 分层: read (自动允许) / write (询问) / high (必须确认)
+# - 原生和 MCP 工具走同一个权限门
+
+build_tool_pool() → NATIVE_TOOLS + MCP_TOOLS (原生同名优先)</pre>
+<ul>
+  <li>MCP 使用 stdio transport (stdin/stdout JSON-RPC 2.0)</li>
+  <li><code>normalize_tool_result()</code> 统一返回格式: source, server, tool, risk, status, preview</li>
+  <li>Plugin manifest 格式: <code>.claude-plugin/plugin.json</code> 含 name, mcpServers 等</li>
+  <li>可扩展：更多 transport、认证流程、重连逻辑、市场管理</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============================== 关键对比 ============================== -->
+<h2>📊 关键概念对比</h2>
+<div class="stage-card">
+<table>
+  <tr><th>对比组</th><th>A</th><th>B</th><th>区别</th></tr>
+  <tr><td>Todo vs Task</td><td>轻量、临时、会话内</td><td>持久化、带状态/依赖</td><td>Todo 是 s03 的 PlanItem；Task 是 s12 的磁盘 TaskRecord</td></tr>
+  <tr><td>Subagent vs Teammate</td><td>一次性派生，返回摘要后销毁</td><td>长期存活，邮箱通信</td><td>s04 子 agent 是临时帮手；s15 队友是团队角色</td></tr>
+  <tr><td>Memory vs Context</td><td>跨会话持久，只存核心事实</td><td>当前工作记忆</td><td>Memory 存磁盘；Context 在 messages 中</td></tr>
+  <tr><td>Prompt vs System Reminder</td><td>稳定系统级输入</td><td>每轮动态补充</td><td>Reminder 作为 user 角色消息注入（s10）</td></tr>
+  <tr><td>TaskRecord vs RuntimeTask</td><td>工件图，持久化</td><td>执行槽，运行时</td><td>s12 Task = 工作图；s13 Background = 后台线程</td></tr>
+  <tr><td>Worktree vs Task</td><td>执行目录隔离</td><td>工作项控制面</td><td>Task 绑定到 Worktree，但两者不相等</td></tr>
+  <tr><td>Native vs MCP 工具</td><td>内建 handler</td><td>外部进程暴露</td><td>统一走 CapabilityPermissionGate 权限门</td></tr>
+</table>
+</div>
+
+<!-- ============================== 代码模式 ============================== -->
+<h2>🔧 贯穿代码的模式</h2>
+<div class="stage-card">
+<table>
+  <tr><th>模式</th><th>描述</th><th>出现位置</th></tr>
+  <tr><td>TOOL_HANDLERS dispatch</td><td>{tool_name: handler_fn} 映射表</td><td>所有 s02+ 章节</td></tr>
+  <tr><td>Frontmatter 解析</td><td>--- key: value --- 块解析</td><td>s04 (AgentTemplate), s05 (SKILL.md), s09 (Memory)</td></tr>
+  <tr><td>agent_loop 模式</td><td>while True: LLM → append → check stop → exec tools → append results</td><td>所有章节 (s01-s19)</td></tr>
+  <tr><td>Notification queue</td><td>后台线程 enqueue → 主循环 drain → 注入 messages</td><td>s13 (Background), s14 (Cron)</td></tr>
+  <tr><td>PID 锁 (lock file)</td><td>写 PID 到文件，检测进程存活</td><td>s09 (Dream lock), s14 (Cron lock)</td></tr>
+  <tr><td>指数退避 + 抖动</td><td>base * 2^attempt + random(0,1)</td><td>s11 (Error Recovery), s14 (Cron jitter)</td></tr>
+  <tr><td>safe_path 限制</td><td>resolve() + is_relative_to() 防止路径逃逸</td><td>所有 s02+ 章节</td></tr>
+  <tr><td>bash validator</td><td>正则检测危险 shell 命令</td><td>s07 开始的所有章节</td></tr>
+</table>
+</div>
+
+<!-- ============================== 状态层 ============================== -->
+<h2>🗂️ 状态架构</h2>
+<div class="stage-card">
+<pre>
+┌──────────────────────────────────────────────────────────┐
+│  messages[]                    ← 工作记忆（所有章节）      │
+├──────────────────────────────────────────────────────────┤
+│  Persisted State (磁盘):                                 │
+│  ├── .memory/*.md                 ← 持久记忆 (s09)       │
+│  ├── .tasks/task_*.json           ← 任务图 (s12)         │
+│  ├── .runtime-tasks/*.{json,log}  ← 后台任务 (s13)       │
+│  ├── .claude/scheduled_tasks.json ← 定时任务 (s14)       │
+│  ├── .team/config.json            ← 队友注册 (s15)       │
+│  ├── .team/inbox/*.jsonl          ← 消息邮箱 (s15)       │
+│  ├── .team/requests/*.json        ← 协议记录 (s16)       │
+│  ├── .worktrees/index.json        ← worktree 注册 (s18)  │
+│  ├── .worktrees/events.jsonl      ← 生命周期事件 (s18)   │
+│  └── .transcripts/*.jsonl         ← 对话转录 (s06)       │
+├──────────────────────────────────────────────────────────┤
+│  In-Memory State:                                        │
+│  ├── PlanningState (TodoManager)   ← 会话内规划 (s03)    │
+│  ├── CompactState                  ← 压缩跟踪 (s06)      │
+│  ├── PermissionManager.rules       ← 权限规则 (s07)      │
+│  ├── HookManager.hooks             ← 钩子定义 (s08)      │
+│  ├── MemoryManager.memories        ← 记忆缓存 (s09)      │
+│  └── BackgroundManager.tasks       ← 后台任务 (s13)      │
+└──────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<!-- ============================== 学习路径建议 ============================== -->
+<h2>💡 学习路径建议</h2>
+<div class="stage-card">
+<ol>
+  <li><strong>s01 → s02</strong>：先跑通最小 loop 和工具路由，这是所有后续章节的基础</li>
+  <li><strong>s03 → s06</strong>：让 agent 变得更聪明（规划、隔离、技能、压缩）</li>
+  <li><strong>s07 → s10</strong>：让 agent 变安全、可扩展、有记忆、输入可控</li>
+  <li><strong>s11</strong>：让 agent 变稳定</li>
+  <li><strong>s12 → s14</strong>：把临时工作升级为持久化任务系统</li>
+  <li><strong>s15 → s17</strong>：从单 agent 到多 agent 团队协作</li>
+  <li><strong>s18 → s19</strong>：外部世界（目录隔离、MCP 协议）</li>
+</ol>
+<div class="note">
+  <strong>阅读建议：</strong>每章先读 <code>docs/zh/sXX-*.md</code> 理解概念，再读 <code>agents/sXX_*.py</code> 看实现。
+  每章头部的 docstring 标注了 <span class="key">key insight</span> — 这是该章最重要的理解起点。
+</div>
+</div>
+
+<!-- ============================== 真实 CC 对比 ============================== -->
+<h2>⚡ 教学版 vs 真实 Claude Code</h2>
+<div class="stage-card">
+<table>
+  <tr><th>维度</th><th>教学版</th><th>真实 CC</th></tr>
+  <tr><td>Subagent 后端</td><td>in-process only</td><td>5 种后端 (in-process, tmux, iTerm2, fork, remote)</td></tr>
+  <tr><td>上下文隔离</td><td>fresh messages=[]</td><td>createSubagentContext() 隔离 ~20 个字段</td></tr>
+  <tr><td>Agent 模板</td><td>硬编码 system prompt</td><td>.claude/agents/*.md 带 YAML frontmatter</td></tr>
+  <tr><td>Hook 超时</td><td>30s 统一超时</td><td>TOOL_HOOK: 10 分钟, SESSION_END: 1.5 秒</td></tr>
+  <tr><td>权限系统</td><td>3 种模式, 规则列表</td><td>MCP servers, 继承, 复杂角色, 灰度规则</td></tr>
+  <tr><td>System Prompt</td><td>每轮完整重建</td><td>静态前缀缓存 + 动态后缀更新</td></tr>
+  <tr><td>Memory 合并</td><td>简单的 4 步 Dream</td><td>更丰富的去重和优先级合并</td></tr>
+  <tr><td>MCP 传输</td><td>stdio only</td><td>stdio + SSE + WebSocket</td></tr>
+</table>
+</div>
+
+<p style="text-align:center;margin-top:20px;color:#6a8f7a;font-size:0.85em;">
+  Generated from <code>agents/</code> source code and <code>docs/zh/</code> Chinese documentation.<br>
+  2026-06-20
+</p>
+
+</body>
+</html>
