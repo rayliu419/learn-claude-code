@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 定时调度（Cron Scheduler）系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --blue: #1a6f9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .dot { color:var(--border); margin-right:4px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code 定时调度（Cron Scheduler）系统设计分析</h1>
+  <p class="sub">作业持久化 · 集群锁竞争 · 确定性抖动 · GrowthBook 运维杠杆</p>
+  <div class="meta">
+    <span>.claude/scheduled_tasks.json</span>
+    <span>O_EXCL + PID 锁</span>
+    <span>setInterval 1s + chokidar</span>
+    <span>三种存储模式</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、核心差异：教学代码 vs 生产代码</h2>
+
+<h3>教学版 (s14_cron_scheduler.py)</h3>
+<table>
+  <tr><th>维度</th><th>实现</th></tr>
+  <tr><td>后台机制</td><td><code class="inline">threading.Thread</code> 每秒轮询，每分钟匹配</td></tr>
+  <tr><td>cron 解析</td><td>手写 <code class="inline">cron_matches()</code> 匹配当前时间</td></tr>
+  <tr><td>持久化</td><td>全量 JSON 读写 <code class="inline">.claude/scheduled_tasks.json</code></td></tr>
+  <tr><td>并发安全</td><td>PID lock 文件（不包含 sessionId）</td></tr>
+  <tr><td>抖动</td><td>静态 <code class="inline">JITTER_OFFSET_MAX=4</code> 固定偏移</td></tr>
+  <tr><td>过期策略</td><td>硬编码 7 天 <code class="inline">AUTO_EXPIRY_DAYS</code></td></tr>
+  <tr><td>缺失检测</td><td><code class="inline">detect_missed_tasks()</code> 逐分钟回退扫描，上限 24h</td></tr>
+  <tr><td>UI</td><td>纯文本 print</td></tr>
+  <tr><td>工具定义</td><td>三个函数注册到 <code class="inline">TOOL_HANDLERS</code> 字典</td></tr>
+</table>
+
+<h3>生产版 (Claude Code)</h3>
+<table>
+  <tr><th>维度</th><th>实现</th></tr>
+  <tr><td>后台机制</td><td><code class="inline">setInterval(check, 1000)</code> + chokidar 文件监听</td></tr>
+  <tr><td>cron 解析</td><td><code class="inline">parseCronExpression()</code> → 展开为 int[] → <code class="inline">computeNextCronRun()</code> 向前寻找</td></tr>
+  <tr><td>持久化</td><td><code class="inline">readCronTasks()</code> async，格式 <code class="inline">{tasks:[...]}</code>，带日志/校验/容错</td></tr>
+  <tr><td>并发安全</td><td>O_EXCL 原子创建 + PID liveness 探针 + sessionId + 5s 探测锁恢复</td></tr>
+  <tr><td>抖动</td><td>比例抖动 (frac 0.1，cap 15min) + 分钟模门控 (mod 30) + 前向/后向两种策略</td></tr>
+  <tr><td>过期策略</td><td>由 <code class="inline">CronJitterConfig.recurringMaxAgeMs</code> 配置，默认 7 天，GrowthBook 可调</td></tr>
+  <tr><td>缺失检测</td><td><code class="inline">findMissedTasks()</code> 仅 one-shot 任务 → <code class="inline">AskUserQuestion</code> 交互确认</td></tr>
+  <tr><td>UI</td><td>React/Ink 组件：ID + humanSchedule 格式化展示</td></tr>
+  <tr><td>工具定义</td><td><code class="inline">buildTool()</code> 框架：validateInput → call → mapToolResult → renderToolUseMessage</td></tr>
+  <tr><td>运维</td><td>GrowthBook 参数实时推送 (<code class="inline">tengu_kairos_cron_config</code>)，5 分钟刷新窗口</td></tr>
+  <tr><td>团队集成</td><td>agentId 标签路由到 teammate 消息队列，孤任务自动清理</td></tr>
+</table>
+
+<h2>二、架构总览</h2>
+
+<h3>核心文件与职责</h3>
+<div class="file-ref"><span class="path">src/utils/cron.ts</span><span class="role">cron 表达式解析 & 下一次执行时间计算</span></div>
+<div class="file-ref"><span class="path">src/utils/cronTasks.ts</span><span class="role">任务 CRUD + 抖动计算 + 缺失检测 + CronJitterConfig 类型</span></div>
+<div class="file-ref"><span class="path">src/utils/cronTasksLock.ts</span><span class="role">scheduler 锁 (O_EXCL + PID 存活探针 + 僵锁恢复)</span></div>
+<div class="file-ref"><span class="path">src/utils/cronScheduler.ts</span><span class="role">调度器引擎 (定时器 + 文件监听 + check 循环 + 多 session 合并)</span></div>
+<div class="file-ref"><span class="path">src/utils/cronJitterConfig.ts</span><span class="role">GrowthBook 驱动抖动参数 (运维杠杆)</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/</span><span class="role">三个工具实现 (CronCreate / CronDelete / CronList)</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/prompt.ts</span><span class="role">工具提示词 & 特性开关 (isKairosCronEnabled)</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/UI.tsx</span><span class="role">React Ink UI 组件</span></div>
+<div class="file-ref"><span class="path">src/hooks/useScheduledTasks.ts</span><span class="role">React hook: REPL 集成层</span></div>
+<div class="file-ref"><span class="path">src/bootstrap/state.ts</span><span class="role">session-only 任务内存存储 & enabled 标志</span></div>
+<div class="file-ref"><span class="path">src/cli/print.ts</span><span class="role">headless 模式 (-p) 集成</span></div>
+
+<hr class="sep">
+
+<h3>数据流全貌</h3>
+<div class="flow">用户: "每小时检查一次我的 PR"
+  │
+  ├─ CronCreateTool.validateInput()
+  │   ├─ cron 表达式校验 (parseCronExpression)
+  │   ├─ 是否在 1 年内有匹配 (nextCronRunMs)
+  │   └─ 任务数 < 50 (MAX_JOBS)
+  │
+  ├─ addCronTask(cron, prompt, recurring, durable)
+  │   ├─ durable=true  → writeCronTasks() → .claude/scheduled_tasks.json
+  │   ├─ durable=false → addSessionCronTask() → bootstrap state (内存)
+  │   └─ 返回 8 位 hex ID (randomUUID().slice(0,8))
+  │
+  ├─ setScheduledTasksEnabled(true)  → 启动 scheduler
+  │
+  │   ════════════════════════════════════════
+  │   scheduler (setInterval 1s) 后台运行:
+  │   │
+  │   ├─ load() → readCronTasks() → chokidar 监听 JSON
+  │   │   └─ 首次加载 → findMissedTasks() → 用户确认
+  │   │
+  │   └─ check() 每秒:
+  │       ├─ isKilled()? → 跳过 (killswitch)
+  │       ├─ isLoading()? → 跳过 (非 assistant mode)
+  │       ├─ isOwner? 则处理文件任务
+  │       │   ├─ 首次见 → jitteredNextCronRunMs → 缓存 nextFireAt
+  │       │   ├─ now ≥ nextFireAt → onFire() / onFireTask()
+  │       │   ├─ recurring: jitteredNextCronRunMs(now) → 重新调度
+  │       │   ├─ one-shot: inFlight → removeCronTasks()
+  │       │   └─ aged recurring: 同上, 最后一发后删除
+  │       ├─ 处理内存任务 (session-only, 无锁, 无文件)
+  │       └─ 清除已消失任务的 nextFireAt 条目
+  │
+  │   ════════════════════════════════════════
+  │
+  └─ 触发时:
+      ├─ agentId 存在 → injectUserMessageToTeammate()
+      └─ agentId 不存在 → enqueuePendingNotification('later')
+         → useCommandQueue 在对话间期 drain
+         → model 收到 cron 注入的消息</div>
+
+<h2>三、cron 表达式引擎</h2>
+
+<div class="card">
+  <p style="margin:0"><strong>解析模型（<code class="inline">cron.ts</code>）</strong> — 语法树展开方式比教学版更彻底：不匹配当前时间，而是将 5 个字段展开为<strong>值集</strong> (number[])。</p>
+</div>
+
+<div class="flow">"*/15 9-17 * * 1-5"
+  → parseCronExpression()
+  → {
+      minute:     [0,15,30,45],
+      hour:       [9,10,11,12,13,14,15,16,17],
+      dayOfMonth: [1..31],
+      month:      [1..12],
+      dayOfWeek:  [1,2,3,4,5]
+    }</div>
+
+<p><code class="inline">computeNextCronRun()</code> 从 <code class="inline">from</code> 之后开始向前逐分钟推进，支持：</p>
+<ul>
+  <li><strong>月跳转</strong> (setMonth+1) — 减少大量没必要迭代</li>
+  <li><strong>日跳转</strong> (setDate+1) — 同样加速</li>
+  <li><strong>OR 语义</strong>：dayOfMonth 和 dayOfWeek 都受限制时，任符合即可</li>
+  <li><strong>DST</strong>：spring-forward gap 自动跳过，fall-back 重复只触发一次（vixie-cron 兼容）</li>
+  <li><strong>bound</strong>：最多 366 天，超限返回 null</li>
+</ul>
+
+<h3>cronToHuman() 可读化</h3>
+<div class="flow">"0 * * * *"       → "Every hour"
+"*/5 * * * *"     → "Every 5 minutes"
+"0 9 * * 1"       → "Every Monday at 9:00 AM"
+"0 9 * * 1-5"     → "Weekdays at 9:00 AM"</div>
+
+<h2>四、抖动（Jitter）系统</h2>
+
+<div class="callout-tip callout">
+  <p style="margin:0"><strong>这是教学版完全忽视的关键问题</strong>："全球用户同时选择 9:00 和 14:30 等整点/半点，产生 API 负载尖峰。" 生产版用两级抖动解决。</p>
+</div>
+
+<h3>1. Recurring Jitter（前向延迟）</h3>
+<p>对周期性任务，每次计划执行时加一个<strong>比例延迟</strong>：</p>
+<div class="flow">公式: delay = taskId_hash × recurringFrac × (interval)
+默认: recurringFrac = 0.1, cap = 15min
+
+例: 每小时执行的任务 → 延迟 0~6 分钟
+    每分钟执行的任务 → 延迟 0~6 秒</div>
+<ul>
+  <li><strong>比例性</strong>：任务周期越长，抖动窗口越大</li>
+  <li><strong>确定性</strong>：从 taskId 的前 8 hex 字符计算，重启后一致</li>
+  <li><strong>上限保护</strong>：<code class="inline">recurringCapMs</code> 防止长间隔任务抖动过大</li>
+</ul>
+
+<h3>2. One-shot Jitter（后向提前）</h3>
+<p>对一次性任务（"2:30 提醒我"），在目标时间前最多 90 秒触发：</p>
+<div class="flow">条件: 分钟字段 % oneShotMinuteMod (默认 30) == 0
+      即只对 :00 和 :30 产生的任务加抖动
+公式: lead = oneShotFloorMs + taskId_hash * (oneShotMaxMs - oneShotFloorMs)
+默认: max=90s, floor=0, mod=30
+
+例: "30 14 * * *" → 在 14:29:01 ~ 14:30:00 之间触发
+    "35 14 * * *" → 无抖动，准点触发（因为 35 % 30 ≠ 0）</div>
+<ul>
+  <li><strong>只对"人类自然选择的整点/半点"</strong>加抖动——这是 API 负载尖峰的真实来源</li>
+  <li><strong>提前触发而不是延后</strong>——因为用户说"2:30 提醒我"，延后就破坏了约定</li>
+  <li>运维可在事故中调整：设 <code class="inline">oneShotMinuteMod=15</code> 覆盖 :00/:15/:30/:45</li>
+</ul>
+
+<h3>GrowthBook 运维杠杆</h3>
+<p><code class="inline">cronJitterConfig.ts</code> 从 GrowthBook 读取 <code class="inline">tengu_kairos_cron_config</code>，Zod 验证后注入 <code class="inline">getJitterConfig</code> 回调。调度器 check() 每秒重新读取缓存，60 秒自动刷新。无需重启客户端即可调整：</p>
+
+<div class="flow">// GrowthBook JSON 配置示例 (tengu_kairos_cron_config)
+{
+  "recurringFrac": 0.1,        // 前向比例
+  "recurringCapMs": 900000,    // 前向上限 (15 min)
+  "oneShotMaxMs": 90000,       // 后向最大提前 (90 s)
+  "oneShotFloorMs": 0,         // 后向最小提前
+  "oneShotMinuteMod": 30,      // 分钟模门控
+  "recurringMaxAgeMs": 604800000  // 自动过期 (7 天)
+}</div>
+
+<h2>五、并发安全：Scheduler 锁机制</h2>
+
+<div class="card">
+  <p style="margin:0"><strong>问题：</strong>当多个 Claude Code 实例在同一个项目目录运行（Terminal + IDE + headless），每个实例都会读取 <code class="inline">.claude/scheduled_tasks.json</code> 并启动调度器——导致同一个 cron 任务被多次触发。</p>
+</div>
+
+<div class="flow">文件锁: .claude/scheduled_tasks.lock
+内容: { sessionId, pid, acquiredAt }
+
+获取流程:
+  1. O_EXCL ('wx') 原子写 → 成功？ → 我是 Owner
+  2. 文件存在 → 读锁检查
+     a. sessionId 是自己的？ → 更新 PID 后返回 true（idempotent re-acquire）
+     b. PID 还活着 (isProcessRunning)？ → 返回 false（被阻止）
+     c. PID 死了（僵锁）？ → unlink + 重试一次 O_EXCL
+  3. 都不是 Owner → 启动 5s 锁探测定时器
+     → 每 5s 尝试 tryAcquireSchedulerLock()
+     → 成功时停止探测
+
+Owner 行为:
+  - 只有 Owner 在 check() 中处理文件任务
+  - 非 Owner 只处理自己的 session-only 任务（内存，无需锁）
+  - 退出时 releaseSchedulerLock() 清理锁文件</div>
+
+<h3>设计权衡</h3>
+<table>
+  <tr><th>方面</th><th>决策</th></tr>
+  <tr><td>一致性</td><td>最终一致性——非 Owner 写入仍在自己的 session 内存中，重启后由 Owner 处理</td></tr>
+  <tr><td>容错性</td><td>PID 死亡 → 5s 内锁被其他 session 回收</td></tr>
+  <tr><td>原子性</td><td>O_EXCL 系统调用级原子</td></tr>
+  <tr><td>性能</td><td>无锁路径 ≈ 内存访问；有锁路径 ≈ 一次文件写</td></tr>
+</table>
+
+<h2>六、任务生命周期</h2>
+
+<h3>任务数据结构 (CronTask)</h3>
+<div class="flow">type CronTask = {
+  id: string              // 8 字符 hex (randomUUID().slice(0,8))
+  cron: string            // 5 字段 cron 表达式
+  prompt: string          // 触发时注入的提示
+  createdAt: number       // 创建时间戳 (epoch ms)
+  lastFiredAt?: number    // 上次触发时间戳 (仅 recurring)
+  recurring?: boolean     // 是否周期性
+  permanent?: boolean     // 免于自动过期 (仅 assistant 模式)
+  durable?: boolean       // 运行时标志: false=session-only
+  agentId?: string        // 运行时标志: 归属 teammate
+}</div>
+
+<h3>三种存储模式</h3>
+<table>
+  <tr><th>存储</th><th>位置</th><th>生命周期</th><th>访问方式</th></tr>
+  <tr><td><strong>Durable</strong></td><td><code class="inline">.claude/scheduled_tasks.json</code></td><td><span class="badge badge-green">跨 session 持久</span></td><td>chokidar 文件监听 + setInterval check</td></tr>
+  <tr><td><strong>Session-only</strong></td><td>bootstrap state (内存)</td><td><span class="badge badge-red">单 session</span></td><td><code class="inline">getSessionCronTasks()</code> 每次 check 读取</td></tr>
+  <tr><td><strong>Teammate</strong></td><td>bootstrap state + agentId</td><td><span class="badge badge-orange">单 session</span></td><td>路由到 teammate 消息队列</td></tr>
+</table>
+
+<h3>状态流转</h3>
+<div class="flow">创建 (CronCreate)
+  │
+  ├─ durable=true  → 写入 JSON → chokidar 触发 load()
+  ├─ durable=false → 写入内存 → check() 下一 tick 开始监视
+  └─ agentId 存在 → session-only + 队友标签
+
+等待 (调度器后台)
+  │
+  ├─ 周期性: computeNextCronRun(createdAt) 锚点
+  │   → jitteredNextCronRunMs() → 确定 nextFireAt
+  ├─ 首次加载: 检测 missed → 用户确认 (one-shot)
+  └─ 锁竞争: 非 Owner 跳过文件任务，本地任务不受影响
+
+触发
+  │
+  ├─ recurring:
+  │   ├─ 未过期 → jitteredNextCronRunMs(now) → 重新调度
+  │   ├─ 已过期 → 最后一发后删除
+  │   └─ permanent → 永不触发过期检查
+  ├─ one-shot:
+  │   ├─ inFlight 标记防止重复 → removeCronTasks()
+  │   └─ nextFireAt 设为 Infinity → 等待下一个 load()
+  └─ teammate: 注入队友消息队列 → 由队友 agent loop 处理
+
+过期
+  │
+  ├─ 自动: recurringMaxAgeMs (默认 7 天)
+  ├─ 手动: CronDelete 工具
+  └─ 孤儿检测: teammate 不复存在时自动清除</div>
+
+<h2>七、与教学版对比的关键差异</h2>
+
+<h3>1. 时间模型</h3>
+<table>
+  <tr><th></th><th>教学版</th><th>生产版</th></tr>
+  <tr><td>匹配方式</td><td>每分钟检查"当前时间是否匹配 cron"</td><td>计算"从锚点到下一次触发之间的毫秒数"</td></tr>
+  <tr><td>精度控制</td><td>每秒轮询 + 分钟防重复</td><td>每秒轮询 + nextFireAt 缓存</td></tr>
+  <tr><td>时间方向</td><td>被动判断"现在是不是"</td><td>主动问"下一次是什么时候"</td></tr>
+  <tr><td>DST</td><td>未处理</td><td>vixie-cron 兼容</td></tr>
+</table>
+
+<div class="callout callout-tip">
+  <p style="margin:0"><strong>生产版为什么用 <code class="inline">computeNextCronRun</code>？</strong> 教学版每分钟检查 all tasks against current time，无法处理"session 离线了 2 小时，应该在这期间触发吗"的精确判定。生产版每个任务锚定 <code class="inline">createdAt</code> 或 <code class="inline">lastFiredAt</code>，支持：首次锚点正确性（<code class="inline">30 14 27 2 *</code> → 明年 2 月 27 日，不是明天）；进程重启后从 <code class="inline">lastFiredAt</code> 恢复相同的 nextFireAt；缺失检测（从 createdAt 出发，next < now → missed）。</p>
+</div>
+
+<h3>2. 文件 I/O 模型</h3>
+<table>
+  <tr><th></th><th>教学版</th><th>生产版</th></tr>
+  <tr><td>读写方式</td><td>全量 read/write</td><td>async read/modify/write + chokidar 监听</td></tr>
+  <tr><td>并发</td><td>无</td><td>O_EXCL 锁 + sessionId 仲裁</td></tr>
+  <tr><td>格式</td><td><code class="inline">[{...}]</code> 数组</td><td><code class="inline">{tasks:[{...}]}</code> 对象包裹</td></tr>
+  <tr><td>容错</td><td>try/except</td><td>逐条校验，失效任务静默跳过 + debug log</td></tr>
+  <tr><td>空文件</td><td>异常处理</td><td>视为空任务列表</td></tr>
+</table>
+
+<h3>3. 缺失任务的处理</h3>
+<table>
+  <tr><th></th><th>教学版</th><th>生产版</th></tr>
+  <tr><td>检测</td><td>从 lastFired 逐分钟回退，上限 24h</td><td>从 createdAt 计算 next，next < now → missed</td></tr>
+  <tr><td>交互</td><td>返回 <code class="inline">missed</code> 列表供调用方处理</td><td>buildMissedTaskNotification → 指导模型用 AskUserQuestion 询问</td></tr>
+  <tr><td>安全</td><td>无特别处理</td><td>代码 fence 包裹 prompt 防止自注入</td></tr>
+  <tr><td>范围</td><td>所有任务</td><td>仅 one-shot（recurring 由 check() 兜底）</td></tr>
+</table>
+
+<h3>4. 生产者端（工具层）</h3>
+<table>
+  <tr><th></th><th>教学版</th><th>生产版</th></tr>
+  <tr><td>参数校验</td><td>无</td><td>Zod schema + validateInput 三关（expr 语法 + 可达性 + 数量）</td></tr>
+  <tr><td>上限</td><td>无</td><td>MAX_JOBS = 50</td></tr>
+  <tr><td>Teammate 限制</td><td>无</td><td>teammate 不能创建 durable cron</td></tr>
+  <tr><td>返回值</td><td>字符串</td><td>结构化 <code class="inline">{id, humanSchedule, recurring, durable}</code></td></tr>
+  <tr><td>容错</td><td>Invalid → try/except</td><td>invalid cron → errorCode 分类</td></tr>
+</table>
+
+<h2>八、代码引用索引</h2>
+
+<h3>核心引擎</h3>
+<div class="file-ref"><span class="path">src/utils/cron.ts</span><span class="role">cron 表达式解析 (<code class="inline">parseCronExpression</code>, <code class="inline">computeNextCronRun</code>, <code class="inline">cronToHuman</code>)。仅支持标准 5 字段，无 L/W/?/name</span></div>
+<div class="file-ref"><span class="path">src/utils/cronScheduler.ts</span><span class="role">调度器主引擎 (<code class="inline">createCronScheduler</code> → { start, stop, getNextFireTime })：setInterval 1s check、chokidar 文件监听、PID 锁仲裁、session-only 任务合并、<code class="inline">buildMissedTaskNotification</code> 缺失通知构建</span></div>
+<div class="file-ref"><span class="path">src/utils/cronTasks.ts</span><span class="role">任务 CRUD (<code class="inline">addCronTask</code>, <code class="inline">removeCronTasks</code>, <code class="inline">readCronTasks</code>, <code class="inline">writeCronTasks</code>, <code class="inline">markCronTasksFired</code>, <code class="inline">listAllCronTasks</code>) + 抖动函数 (<code class="inline">jitteredNextCronRunMs</code>, <code class="inline">oneShotJitteredNextCronRunMs</code>, <code class="inline">findMissedTasks</code>) + <code class="inline">CronJitterConfig</code> 类型和默认值</span></div>
+<div class="file-ref"><span class="path">src/utils/cronTasksLock.ts</span><span class="role">Scheduler 锁 (<code class="inline">tryAcquireSchedulerLock</code>, <code class="inline">releaseSchedulerLock</code>)，O_EXCL + PID 存活探针 + 回收重试</span></div>
+<div class="file-ref"><span class="path">src/utils/cronJitterConfig.ts</span><span class="role">GrowthBook 驱动抖动配置 (<code class="inline">getCronJitterConfig</code>)，Zod 校验，60s 自动刷新</span></div>
+
+<h3>工具层</h3>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/CronCreateTool.ts</span><span class="role">CronCreate 工具定义：参数校验 (Zod, <code class="inline">validateInput</code> 3 步)、<code class="inline">call()</code> 写入任务 + 启动调度器、<code class="inline">mapToolResultToToolResultBlockParam</code> 返回说明</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/CronDeleteTool.ts</span><span class="role">CronDelete 工具：ID 校验 + 权限检查 (teammate 只能删除自己的)、<code class="inline">removeCronTasks</code> 执行</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/CronListTool.ts</span><span class="role">CronList 工具：合并 durable + session-only 列表、teammate 过滤</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/prompt.ts</span><span class="role">工具提示词、<code class="inline">isKairosCronEnabled()</code> 和 <code class="inline">isDurableCronEnabled()</code> 特性门控、DEFAULT_MAX_AGE_DAYS</span></div>
+<div class="file-ref"><span class="path">src/tools/ScheduleCronTool/UI.tsx</span><span class="role">React Ink UI：<code class="inline">renderCreateToolUseMessage</code> / <code class="inline">renderCreateResultMessage</code> / renderDelete / renderList</span></div>
+
+<h3>集成层</h3>
+<div class="file-ref"><span class="path">src/hooks/useScheduledTasks.ts</span><span class="role">React hook：<code class="inline">createCronScheduler({onFire, onFireTask, isLoading, getJitterConfig, isKilled})</code> → <code class="inline">scheduler.start()</code>，effect unmount 时 <code class="inline">scheduler.stop()</code></span></div>
+<div class="file-ref"><span class="path">src/bootstrap/state.ts</span><span class="role"><code class="inline">scheduledTasksEnabled</code> 标志 (line 137)、<code class="inline">sessionCronTasks</code> 存储 (line 143)、<code class="inline">addSessionCronTask</code> / <code class="inline">removeSessionCronTasks</code> / <code class="inline">getSessionCronTasks</code> (line 1295-1313)</span></div>
+<div class="file-ref"><span class="path">src/tools.ts</span><span class="role">工具注册 (line 31-33)：三个工具按数组顺序注册</span></div>
+<div class="file-ref"><span class="path">src/constants/system.ts</span><span class="role"><code class="inline">cc_workload</code> 中 cron-initiated 请求的低 QoS 标记 (line 83)</span></div>
+
+<h2>九、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px"><strong>设计哲学：<em>"精确度换可靠性，抖动换算力，锁定换一致性。"</em></strong></p>
+  <p style="margin:0">生产版调度器的每一处设计都在三个方面做了权衡。教学版 s14 教会的是"调度器做的是记住未来"，生产版则展示了当"记住未来"扩展到全球用户级时，需要补充并发锁、确定性抖动、可配置运维和 teammate 集成等工程级实现。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">精确性</td><td>✅ 不追求毫秒级准时。每秒轮询 + nextFireAt 缓存（Web Worker 级的时钟精度就够了）</td></tr>
+    <tr><td>API 负载</td><td>✅ 抖动系统从 cron 语法角度解决全球 API 尖峰，而非在基础设施层做速率限制</td></tr>
+    <tr><td>多 session</td><td>✅ O_EXCL 锁 + PID 探针允许 Terminal / IDE / headless 共存而不互相干扰</td></tr>
+    <tr><td>可运维性</td><td>✅ 抖动参数由 GrowthBook 推送，不硬编码在 "推荐使用 :07" 的提示词中</td></tr>
+    <tr><td>可靠性</td><td>✅ 缺失检测 + AskUserQuestion 交互 + 代码 fence 防自注入 + 孤儿清理</td></tr>
+    <tr><td>资源管理</td><td>✅ 一个 setInterval 驱动所有任务，定时器 unref() 不阻止进程退出</td></tr>
+  </table>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-06-21<br>
+  教学代码: <code class="inline">agents/s14_cron_scheduler.py</code> | 生产源码: <code class="inline">src/utils/cron*.ts</code> + <code class="inline">src/tools/ScheduleCronTool/</code>
+</p>
+
+</div>
+</body>
+</html>

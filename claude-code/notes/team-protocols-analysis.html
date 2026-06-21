@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Team Protocols 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  /* Hero */
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  /* Container */
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  /* Headings */
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  /* Cards */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  /* Code */
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  /* Badges */
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  /* Flowchart */
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  /* Callout */
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  /* File refs */
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* Lists in cards */
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  /* Call chain */
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code Team Protocols 系统设计分析</h1>
+  <p class="sub">结构化消息路由框架：九路分流引擎、双端协议处理、忙闲队列策略</p>
+  <div class="meta">
+    <span>useInboxPoller + 12 种协议类型</span>
+    <span>Leader/Teammate 双端路由</span>
+    <span>in-process bridge 优化</span>
+    <span>Zod schema 校验</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的协议系统是构建在 Mailbox 文件通信之上的<strong>结构化消息路由框架</strong>。教学版 s16 提出了 <code class="inline">ProtocolEnvelope</code> + <code class="inline">RequestRecord</code> + <code class="inline">状态机</code> 三层模型；生产版将其扩展为 <code class="inline">useInboxPoller</code> + 12 种协议类型 + 9 路路由 + 模块级回调注册 + 文件锁邮箱的完整体系。</p>
+
+<h3>核心概念对比</h3>
+<table>
+  <thead><tr><th>概念</th><th>教学版 (s16)</th><th>生产版 (Claude Code)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>协议定义</strong></td><td><code class="inline">ProtocolEnvelope</code> + <code class="inline">RequestRecord</code></td><td>12 种 JSON 类型 + Zod Schema 反序列化校验</td></tr>
+    <tr><td><strong>路由方式</strong></td><td>手动 drain inbox → 判断 type</td><td><code class="inline">useInboxPoller</code> 自动 9 路分流</td></tr>
+    <tr><td><strong>状态跟踪</strong></td><td><code class="inline">.team/requests/{id}.json</code></td><td>模块级 callback registry + AppState + 文件邮箱三重</td></tr>
+    <tr><td><strong>协议 vs 普通消息</strong></td><td>手动区分</td><td><code class="inline">isStructuredProtocolMessage()</code> 自动过滤</td></tr>
+    <tr><td><strong>权限协议</strong></td><td>无</td><td>Worker → Mailbox → Leader → UI 权限代理</td></tr>
+    <tr><td><strong>序列化</strong></td><td>Python dict → JSONL</td><td><code class="inline">jsonStringify</code> + 文件锁 + Zod <code class="inline">safeParse</code> 验证</td></tr>
+  </tbody>
+</table>
+
+<h2>二、协议消息分类体系</h2>
+
+<p>生产代码定义了 <strong>12 种</strong>结构化协议消息类型，集中在 <code class="inline">src/utils/teammateMailbox.ts</code> 中。</p>
+
+<table>
+  <thead><tr><th>消息类型</th><th>Schema 定义</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">idle_notification</code></td><td>TypeScript 接口</td><td>队友空闲通知</td></tr>
+    <tr><td><code class="inline">permission_request</code></td><td>TypeScript 接口</td><td>Worker → Leader 权限请求</td></tr>
+    <tr><td><code class="inline">permission_response</code></td><td>TypeScript 接口</td><td>Leader → Worker 权限响应</td></tr>
+    <tr><td><code class="inline">sandbox_permission_request</code></td><td>TypeScript 接口</td><td>Worker → Leader 网络权限请求</td></tr>
+    <tr><td><code class="inline">sandbox_permission_response</code></td><td>TypeScript 接口</td><td>Leader → Worker 网络权限响应</td></tr>
+    <tr><td><code class="inline">shutdown_request</code></td><td><span class="badge badge-green">Zod Schema</span></td><td>Leader → Teammate 关闭请求</td></tr>
+    <tr><td><code class="inline">shutdown_approved</code></td><td><span class="badge badge-green">Zod Schema</span></td><td>Teammate → Leader 确认关闭</td></tr>
+    <tr><td><code class="inline">plan_approval_request</code></td><td><span class="badge badge-green">Zod Schema</span></td><td>Teammate → Leader 计划审批请求</td></tr>
+    <tr><td><code class="inline">plan_approval_response</code></td><td><span class="badge badge-green">Zod Schema</span></td><td>Leader → Teammate 计划审批响应</td></tr>
+    <tr><td><code class="inline">mode_set_request</code></td><td><span class="badge badge-green">Zod Schema</span></td><td>Leader → Teammate 模式切换</td></tr>
+    <tr><td><code class="inline">team_permission_update</code></td><td>TypeScript 接口</td><td>Leader → All 权限广播</td></tr>
+    <tr><td><code class="inline">task_assignment</code></td><td>TypeScript 接口</td><td>Leader → Teammate 任务指派</td></tr>
+  </tbody>
+</table>
+
+<div class="callout-tip callout">
+  <p><strong>统一过滤门控：</strong><code class="inline">isStructuredProtocolMessage()</code> 检查消息的 <code class="inline">type</code> 字段，匹配以上类型时返回 true。这些消息不会被 teammate 的 inbox poller 当作普通 LLM 上下文消耗，而是路由到特定的 handler。</p>
+</div>
+
+<h2>三、Inbox Poller 九路分流引擎</h2>
+
+<p><code class="inline">useInboxPoller</code>（<code class="inline">src/hooks/useInboxPoller.ts</code>）是协议系统的核心。它是一个 React Hook，每 <strong>1 秒</strong> 轮询邮箱文件，将未读消息按类型分类路由。</p>
+
+<h3>完整路由流程</h3>
+<div class="flow">useInboxPoller() ── 每 1 秒 ──
+  │
+  ├─ getAgentNameToPoll(appState)      ← 过滤 in-process teammate！
+  │   └─ in-process? → undefined（不走 poller）
+  │   └─ isTeammate? → agentName
+  │   └─ isTeamLead? → leadName
+  │   └─ standalone  → undefined
+  │
+  ├─ readUnreadMessages(agentName, teamName)
+  │
+  └─ 九路分流
+       │
+       ├─ permission_request ──────────────→ Leader 端
+       │   └─ findToolByName → ToolUseConfirmQueue 入队
+       │   └─ onAllow → sendPermissionResponseViaMailbox
+       │   └─ onReject → sendPermissionResponseViaMailbox
+       │   └─ 桌面通知
+       │
+       ├─ permission_response ─────────────→ Teammate 端
+       │   └─ hasPermissionCallback?
+       │   └─ processMailboxPermissionResponse
+       │       ├─ approved → onAllow(input, updates)
+       │       └─ rejected → onReject(feedback)
+       │
+       ├─ sandbox_permission_request ──────→ Leader 端
+       │   └─ 入 workerSandboxPermissions.queue
+       │
+       ├─ sandbox_permission_response ────→ Teammate 端
+       │   └─ processSandboxPermissionResponse
+       │
+       ├─ shutdown_request ────────────────→ Teammate 端
+       │   └─ 以普通消息传递（model 自行处理）
+       │   └─ UI 渲染 shutdown 通知
+       │
+       ├─ shutdown_approved ───────────────→ Leader 端
+       │   └─ killPane (tmux) / AbortController (in-process)
+       │   └─ removeTeammateFromTeamFile
+       │   └─ unassignTeammateTasks
+       │   └─ UI 系统消息通知
+       │
+       ├─ team_permission_update ──────────→ Teammate 端
+       │   └─ applyPermissionUpdate('addRules', rules)
+       │
+       ├─ mode_set_request ────────────────→ Teammate 端
+       │   └─ 验证 from === 'team-lead'
+       │   └─ applyPermissionUpdate('setMode', mode)
+       │   └─ setMemberMode(config.json)
+       │
+       ├─ plan_approval_request ───────────→ Leader 端
+       │   └─ 自动批准（无需用户干预）
+       │   └─ writeToMailbox(teammate, response)
+       │   └─ handlePlanApprovalResponse (in-process)
+       │
+       └─ 普通消息 ───────────────────────→ 双方
+             ├─ idle? → 立即提交新 turn
+             └─ busy? → 入 AppState.inbox.messages 队列</div>
+
+<h3>忙时/闲时策略</h3>
+<div class="card">
+  <h4 style="margin-top:0">会话空闲时</h4>
+  <p>消息立即通过 <code class="inline">onSubmitTeammateMessage()</code> 提交为新 turn。消息格式化为 XML <code class="inline">&lt;teammate_message&gt;</code> tag，附带 <code class="inline">teammate_id</code>、<code class="inline">color</code>、<code class="inline">summary</code> 属性。</p>
+  <h4>会话忙碌时</h4>
+  <p>消息排入 <code class="inline">AppState.inbox.messages</code> 数组，UI 侧边栏显示待处理通知。当前 turn 结束后，<code class="inline">useEffect</code> 检测空闲并交付排队消息。</p>
+  <h4>去重机制</h4>
+  <p>如果 <code class="inline">markMessagesAsRead</code> 失败，同一消息会在下轮 poll 中重新读取。Permission 请求通过 <code class="inline">toolUseID</code> 去重；普通消息通过 <code class="inline">id (randomUUID)</code> 去重。</p>
+</div>
+
+<h3>谁不走 Inbox Poller</h3>
+<div class="callout-warn callout">
+  <p><strong>In-process teammate 不走 useInboxPoller。</strong>原因：in-process teammate 和 Leader 共享 React 上下文和 AppState，使用 poller 会导致消息路由冲突（shared setAppState + AsyncLocalStorage context）。</p>
+</div>
+<p>In-process teammate 使用 <code class="inline">waitForNextPromptOrShutdown()</code> 机制：</p>
+<ol style="padding-left:18px;">
+  <li>优先检查 <code class="inline">task.pendingUserMessages[]</code>（Leader 直接 push，零延迟）</li>
+  <li>然后轮询文件邮箱（回退机制）</li>
+  <li>超时后标记为 idle</li>
+</ol>
+
+<h2>四、六大协议详解</h2>
+
+<h3>4.1 权限协议（Permission Protocol）</h3>
+<p>这是生产版最核心、教学版完全没有的协议。Worker 的工具调用权限通过 mailbox 转发给 Leader 处理。</p>
+
+<div class="flow">Worker                          Mailbox                         Leader
+  │                                │                               │
+  ├─ 尝试 Bash 分类器               │                               │
+  │  (自动批准)                     │                               │
+  ├─ createPermissionRequest()      │                               │
+  │  ├─ 包含：tool_name, input,      │                               │
+  │  │  description, request_id     │                               │
+  │  └─ writeToMailbox() ──────────→│                               │
+  │                                 │  useInboxPoller/1s            │
+  │                                 ├──────────────────────────────→│
+  │                                 │                               ├─ ToolUseConfirmQueue
+  │                                 │                               ├─ 用户弹窗
+  │                                 │                               ├─ 批准/拒绝
+  │                                 │  permission_response          │
+  │                                 ←───────────────────────────────┤
+  │  processMailboxPermissionResponse                               │
+  │  ├─ approved → onAllow(input)   │                               │
+  │  └─ rejected → onReject(msg)    │                               │
+  │                                 │                               │
+  │  (用 SwarmPermissionPoller      │                               │
+  │   每 500ms 轮询 resolved 目录   │                               │
+  │   作为第二层响应通道)            │                               │
+</div>
+
+<h3>4.2 关闭协议（Shutdown Protocol）</h3>
+<p>教学版两路协议之一。生产版从 Boolean 响应扩展为完整的四级协商：</p>
+
+<div class="flow">Leader                               Teammate
+  │                                      │
+  ├─ InProcessBackend.terminate()         │
+  │  └─ createShutdownRequestMessage     │
+  │  └─ writeToMailbox(inbox) ──────────→│
+  │                                      ├─ isShutdownRequest() detect
+  │                                      ├─ 判断 approve / reject
+  │                         ←────────────├─ write shutdown_approved
+  │  └─ shutdown_approved →              │      or shutdown_rejected
+  │     ├─ killPane (tmux teammate)      │
+  │     ├─ remove from team file         │  └─ approve → exit agent loop + cleanup
+  │     ├─ unassign tasks                │  └─ reject → continue working
+  │     └─ UI notification              │
+  │                                      │
+  ├─ InProcessBackend.kill()             │
+  │  └─ abortController.abort() ────────→┤  ← 直接 abort，无协商
+</div>
+
+<h3>4.3 计划审批协议（Plan Approval Protocol）</h3>
+<p>与教学版不同，生产版的 Leader <strong>自动批准</strong> plan_approval_request：</p>
+
+<div class="flow">Teammate                         Leader
+  │                                │
+  ├─ submit plan                   │
+  └─ write plan_approval_request ──→│
+                                    ├─ isPlanApprovalRequest() detect
+                                    ├─ 自动批准（无需用户干预）
+                                    ├─ 继承 permissionMode:
+                                    │   Leader plan mode? → 'default'
+                                    │   否则 → 继承 Leader 当前 mode
+                                    ├─ writeToMailbox(response) → teammate inbox
+                                    ├─ handlePlanApprovalResponse(in-process)
+                                    │   └─ taskState update
+                                    └─ 同时标记为普通消息 → model 可见
+
+Teammate (useInboxPoller)
+  ├─ 检测到 plan_approval_response
+  ├─ 验证 from === 'team-lead'    ← 安全校验
+  ├─ approved?
+  │   └─ applyPermissionUpdate('setMode', mode) → 退出 plan mode
+  └─ rejected?
+       └─ 记录 feedback
+
+  [安全设计] 只有 from='team-lead' 的响应被接受，
+  防止其他 teammate 伪造批准。</div>
+
+<h3>4.4 模式设置协议（Mode Set Protocol）</h3>
+<p>Leader 可以在 TeamsDialog 中更改 teammate 的权限模式：</p>
+<div class="flow">Leader (TeamsDialog)
+  └─ writeToMailbox(teammate, mode_set_request { mode: 'plan' })
+
+Teammate (useInboxPoller)
+  ├─ 验证 from === 'team-lead'
+  ├─ 解析 mode → permissionModeFromString
+  ├─ applyPermissionUpdate('setMode', mode)  ← 本地即时生效
+  └─ setMemberMode(config.json, mode)         ← 持久化到共享配置</div>
+
+<h3>4.5 团队权限广播（Team Permission Update）</h3>
+<div class="flow">Leader (UI)
+  └─ writeToMailbox(teammate, team_permission_update {
+       toolName: 'Edit',
+       directoryPath: '/path/to/project',
+       permissionUpdate: { type: 'addRules', rules: [...], behavior: 'allow' }
+     })
+
+Teammate (useInboxPoller)
+  ├─ 验证 permissionUpdate.rules + behavior
+  └─ applyPermissionUpdate('addRules', rules)
+       → 更新 session allow rules，无需用户确认</div>
+
+<h3>4.6 空闲通知协议（Idle Notification Protocol）</h3>
+<p>注册在 teammate 的 Stop hook 中，在每个 turn 结束时触发：</p>
+<div class="flow">Teammate Stop hook (teammateInit.ts)
+  ├─ setMemberActive(teamName, agentName, false)   ← 标记空闲
+  ├─ createIdleNotification(agentName, {
+  │     idleReason: 'available' | 'interrupted' | 'failed',
+  │     summary: getLastPeerDmSummary(messages),
+  │     completedTaskId, completedStatus, failureReason
+  │   })
+  └─ writeToMailbox(leadAgentName, notification)
+
+Leader
+  └─ 收到 idle_notification → UI 显示队友完成状态</div>
+
+<h2>五、双端处理模式对比</h2>
+
+<table>
+  <thead><tr><th>特性</th><th>进程级 teammate (tmux/iTerm2)</th><th>In-process teammate</th></tr></thead>
+  <tbody>
+    <tr><td>消息路由</td><td><code class="inline">useInboxPoller</code> (React Hook, 1s 间隔)</td><td><code class="inline">waitForNextPromptOrShutdown</code> (500ms)</td></tr>
+    <tr><td>React 上下文</td><td>独立进程，独立 React 树</td><td>共享 Leader 的 React 上下文</td></tr>
+    <tr><td>权限请求</td><td>Mailbox → Leader ToolUseConfirmQueue</td><td><code class="inline">leaderPermissionBridge</code> 直接入队</td></tr>
+    <tr><td>零延迟路径</td><td>无（依赖 mailbox 轮询）</td><td><code class="inline">pendingUserMessages[]</code> Leader 直接 push</td></tr>
+    <tr><td>shutdown 控制</td><td>killPane()</td><td><code class="inline">AbortController.abort()</code></td></tr>
+    <tr><td>权限响应轮询</td><td><code class="inline">useSwarmPermissionPoller</code> (500ms)</td><td><code class="inline">leaderPermissionBridge</code> callback 立即触发</td></tr>
+  </tbody>
+</table>
+
+<h2>六、序列化与校验</h2>
+
+<table>
+  <thead><tr><th>消息类型</th><th>创建</th><th>序列化</th><th>反序列化</th><th>校验</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">IdleNotification</code></td><td><code class="inline">createIdleNotification()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isIdleNotification()</code></td><td>手动 JSON parse + type check</td></tr>
+    <tr><td><code class="inline">ShutdownRequest</code></td><td><code class="inline">createShutdownRequestMessage()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isShutdownRequest()</code></td><td>Zod <code class="inline">safeParse</code></td></tr>
+    <tr><td><code class="inline">ShutdownApproved</code></td><td><code class="inline">createShutdownApprovedMessage()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isShutdownApproved()</code></td><td>Zod <code class="inline">safeParse</code></td></tr>
+    <tr><td><code class="inline">ShutdownRejected</code></td><td><code class="inline">createShutdownRejectedMessage()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isShutdownRejected()</code></td><td>Zod <code class="inline">safeParse</code></td></tr>
+    <tr><td><code class="inline">PlanApprovalRequest</code></td><td>手动</td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isPlanApprovalRequest()</code></td><td>Zod <code class="inline">safeParse</code></td></tr>
+    <tr><td><code class="inline">PlanApprovalResponse</code></td><td>手动</td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isPlanApprovalResponse()</code></td><td>Zod <code class="inline">safeParse</code></td></tr>
+    <tr><td><code class="inline">ModeSetRequest</code></td><td><code class="inline">createModeSetRequestMessage()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isModeSetRequest()</code></td><td>Zod <code class="inline">safeParse</code></td></tr>
+    <tr><td><code class="inline">PermissionRequest</code></td><td><code class="inline">createPermissionRequestMessage()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isPermissionRequest()</code></td><td>手动 JSON parse + type check</td></tr>
+    <tr><td><code class="inline">PermissionResponse</code></td><td><code class="inline">createPermissionResponseMessage()</code></td><td><code class="inline">jsonStringify</code></td><td><code class="inline">isPermissionResponse()</code></td><td>手动 JSON parse + type check</td></tr>
+  </tbody>
+</table>
+
+<h2>七、核心代码引用</h2>
+
+<h3>协议路由引擎</h3>
+<div class="file-ref"><span class="path">src/hooks/useInboxPoller.ts</span><span class="role">核心协议路由引擎：九路分流、忙闲策略、消息格式化、去重、初始化轮询</span></div>
+<div class="file-ref"><span class="path">src/hooks/useSwarmPermissionPoller.ts</span><span class="role">权限响应轮询：模块级 callback registry、pending/resolved 目录轮询、permissionUpdate 校验</span></div>
+
+<h3>协议消息定义</h3>
+<div class="file-ref"><span class="path">src/utils/teammateMailbox.ts</span><span class="role">12 种协议消息类型定义、Schema、创建辅助函数、检测函数、isStructuredProtocolMessage 过滤</span></div>
+
+<h3>权限协议</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/permissionSync.ts</span><span class="role">SwarmPermissionRequest schema、创建、pending/resolved 文件目录、mailbox 收发、轮询</span></div>
+<div class="file-ref"><span class="path">src/hooks/toolPermission/handlers/swarmWorkerHandler.ts</span><span class="role">Worker 端权限处理：分类器 → mailbox 转发 → callback 注册</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/leaderPermissionBridge.ts</span><span class="role">Leader 权限桥接：ToolUseConfirmQueue setter 注册/获取</span></div>
+
+<h3>Shutdown 协议</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/InProcessBackend.ts</span><span class="role">In-process terminate/kill 实现（192-289 行）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/spawnInProcess.ts</span><span class="role">killInProcessTeammate：AbortController 强制终止</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/teamHelpers.ts</span><span class="role">removeTeammateFromTeamFile / cleanupSessionTeams 清理</span></div>
+
+<h3>空闲通知</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/teammateInit.ts</span><span class="role">Stop hook 注册、idle_notification 发送</span></div>
+<div class="file-ref"><span class="path">src/utils/inProcessTeammateHelpers.ts</span><span class="role">handlePlanApprovalResponse / findInProcessTeammateTaskId</span></div>
+<div class="file-ref"><span class="path">src/utils/collapseTeammateShutdowns.ts</span><span class="role">Shutdown 通知折叠（UI 优化）</span></div>
+
+<h3>In-Process 协议处理</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/inProcessRunner.ts</span><span class="role">waitForNextPromptOrShutdown：pendingUserMessages + mailbox fallback</span></div>
+
+<h3>UI 组件</h3>
+<div class="file-ref"><span class="path">src/components/messages/UserTeammateMessage.tsx</span><span class="role">队友消息渲染组件</span></div>
+<div class="file-ref"><span class="path">src/components/Spinner/TeammateSpinnerTree.tsx</span><span class="role">队友运行状态树（含 idle/running/shutdown 状态）</span></div>
+<div class="file-ref"><span class="path">src/components/teams/TeamsDialog.tsx</span><span class="role">团队管理对话框（含 mode_set_request 触发）</span></div>
+
+<h2>八、教学版 vs 生产版要点对照</h2>
+
+<table>
+  <thead><tr><th>维度</th><th>教学版 (s16)</th><th>生产版</th></tr></thead>
+  <tbody>
+    <tr><td><strong>协议种类</strong></td><td>2 种（shutdown + plan_approval）</td><td>12 种（含 permission 系列、mode、sandbox、广播等）</td></tr>
+    <tr><td><strong>协议模板</strong></td><td>请求-响应 + request_id</td><td>请求-响应 + Zod schema 验证 + 文件锁 + callback registry</td></tr>
+    <tr><td><strong>路由方式</strong></td><td>Drain inbox 后手动 switch</td><td><code class="inline">useInboxPoller</code> 自动九路分流 + <code class="inline">isStructuredProtocolMessage</code> 过滤</td></tr>
+    <tr><td><strong>状态表</strong></td><td><code class="inline">.team/requests/{id}.json</code></td><td>模块级 callback registry + AppState.tasks + config.json 三重</td></tr>
+    <tr><td><strong>权限模型</strong></td><td>无</td><td>Worker → Mailbox → Leader → UI 完整权限代理链路</td></tr>
+    <tr><td><strong>并发安全</strong></td><td>无锁</td><td><code class="inline">proper-lockfile</code> 文件锁 + Zod schema 反序列化过滤</td></tr>
+    <tr><td><strong>Shutdown 协商</strong></td><td>request → approve/reject</td><td>request → approve/reject + force kill (AbortController) 四级</td></tr>
+    <tr><td><strong>Plan 审批</strong></td><td>Lead 手动审查批准</td><td>Leader 自动批准 + permissionMode 继承</td></tr>
+    <tr><td><strong>忙时处理</strong></td><td>无（单线程）</td><td>忙时队列 + 闲时交付 + 去重机制</td></tr>
+    <tr><td><strong>In-process 优化</strong></td><td>无（单进程线程）</td><td>pendingUserMessages + leaderPermissionBridge 零延迟路径</td></tr>
+  </tbody>
+</table>
+
+<h2>九、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px"><strong>协议系统设计哲学：</strong>"消息统一入邮箱，路由按类型分流，处理看忙闲状态。"</p>
+  <p style="margin:0">所有结构化协议消息通过同一个文件邮箱通道传输，通过 <code class="inline">isStructuredProtocolMessage()</code> 门控过滤后路由到不同的 handler。教学版的"ProtocolEnvelope + RequestRecord + 状态机"三层模型在生产版中被吸收为：消息类型定义 + callback registry 回调 + AppState/文件双重状态跟踪。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">统一性</td><td>✅ 所有消息共享同一邮箱通道，架构简单</td></tr>
+    <tr><td>路由效率</td><td>⚠️ 每 1s 轮询 + 逐条 try-catch 类型检测，大规模 swarm 可能成为瓶颈</td></tr>
+    <tr><td>安全性</td><td>✅ from === 'team-lead' 校验 + Zod schema 反序列化过滤 <code class="inline">malformed</code> 消息</td></tr>
+    <tr><td>实时性</td><td>⚠️ 文件邮箱 1s 轮询延迟；in-process 通过 bridge 零延迟优化</td></tr>
+    <tr><td>健壮性</td><td>✅ 忙时队列 + 去重 + 锁文件 + 双重响应通道（mailbox + disk files）</td></tr>
+    <tr><td>可扩展性</td><td>✅ 新增协议类型只需添加 is* 检测函数 + poller 分流分支</td></tr>
+  </table>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-06-21<br>
+  关联文档: <a href="../../docs/zh/s16-team-protocols.md" style="color:var(--accent)">教学版 s16 中文文档</a> · <a href="agent-teams-analysis.html" style="color:var(--accent)">Agent Teams 系统分析</a>
+</p>
+
+</div>
+</body>
+</html>

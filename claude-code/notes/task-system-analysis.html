@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 任务系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --blue: #1a6f9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  /* Hero */
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  /* Container */
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  /* Headings */
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  /* Cards */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  /* Code */
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  /* Badges */
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--blue)}
+
+  /* Flowchart */
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  /* Callout */
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+  .callout-fail { border-left-color:var(--red); background:#fde2e2; }
+
+  /* File refs */
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* File refs compact */
+  .file-ref-compact { display:flex; align-items:baseline; gap:6px; padding:2px 0; font-size:0.82em; }
+  .file-ref-compact .path { font-family:"SF Mono","Fira Code",monospace; color:var(--accent); min-width:240px; font-size:0.88em; }
+  .file-ref-compact .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* Lifecycle bar */
+  .lifecycle-bar { display:flex; border-radius:6px; overflow:hidden; height:28px; margin:8px 0; font-size:0.72em; font-weight:600; }
+  .lifecycle-bar div { display:flex; align-items:center; justify-content:center; }
+
+  /* Lists in cards */
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  /* Call chain */
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .dot { color:var(--border); margin-right:4px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  /* Highlight box */
+  .highlight { background:#f0f7f2; border:1px solid var(--border); border-radius:4px; padding:8px 12px; margin:6px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+    .file-ref-compact { flex-direction:column; gap:1px; }
+    .file-ref-compact .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code 任务系统设计分析</h1>
+  <p class="sub">两个任务概念、文件锁并发安全、Swarm 协同编排 — 从教学代码到生产级实现</p>
+  <div class="meta">
+    <span>s12 → src/utils/tasks.ts + src/tasks/</span>
+    <span>两个独立子系统</span>
+    <span>TodoV2 + 运行时 Task</span>
+    <span>Swarm 协同</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的任务系统并非单一组件，而是<strong>两个完全独立的任务子系统</strong>共享同一个名称但服务于不同的目的。这是教学代码与生产代码之间最大的概念差异：</p>
+
+<div class="card">
+  <p style="margin:0"><strong>核心设计区分：</strong>"任务"一词在 Claude Code 中同时指代<strong>持久化工作图（Work-Graph Task）</strong>和<strong>运行时执行槽（Runtime Task）</strong>。前者是 s12 教学的延续（目标规划 + 依赖关系），后者对应 s13 的后台执行。生产代码中它们是两套独立的代码路径、数据结构、存储机制和生命周期。</p>
+</div>
+
+<h3>两个子系统对比</h3>
+<table>
+  <thead>
+    <tr><th>维度</th><th>TodoV2 / Work-Graph Task</th><th>Runtime Task</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>用途</strong></td><td>计划编排、依赖管理、进度跟踪</td><td>执行 shell 命令、agent、workflow 等</td></tr>
+    <tr><td><strong>存储</strong></td><td><code class="inline">~/.claude/tasks/{taskListId}/*.json</code></td><td>In-memory AppState + 磁盘输出文件</td></tr>
+    <tr><td><strong>数据结构</strong></td><td><code class="inline">{ id, subject, description, status, owner, blocks, blockedBy }</code></td><td><code class="inline">TaskStateBase { id, type, status, startTime, outputFile, ... }</code></td></tr>
+    <tr><td><strong>状态</strong></td><td>pending → in_progress → completed / deleted</td><td>pending → running → completed / failed / killed</td></tr>
+    <tr><td><strong>持久性</strong></td><td>磁盘文件，跨对话存活</td><td>进程内状态，输出文件持久，状态不跨进程</td></tr>
+    <tr><td><strong>工具接口</strong></td><td>TaskCreate / TaskGet / TaskList / TaskUpdate</td><td>TaskStop (kill running background task)</td></tr>
+    <tr><td><strong>并发安全</strong></td><td>proper-lockfile 文件锁（swarm 多进程）</td><td>进程内同步（单进程）</td></tr>
+    <tr><td><strong>Hook 支持</strong></td><td>TaskCreated / TaskCompleted (+ 阻塞 hook)</td><td>Terminated SDK event</td></tr>
+    <tr><td><strong>文件位置</strong></td><td><code class="inline">src/utils/tasks.ts</code></td><td><code class="inline">src/tasks/</code> 目录</td></tr>
+  </tbody>
+</table>
+
+<h3>关键数字</h3>
+<table>
+  <tr><td style="width:160px">Work-Graph 任务目录</td><td><code class="inline">~/.claude/tasks/{taskListId}/</code></td></tr>
+  <tr><td>任务文件格式</td><td>JSON（<code class="inline">{id, subject, description, status, blocks, blockedBy, owner, metadata}</code>）</td></tr>
+  <tr><td>并发锁重试</td><td>30 次，5ms–100ms 退避（~2.6s 窗口）</td></tr>
+  <tr><td>Runtime Task 类型</td><td>7 种（local_bash, local_agent, remote_agent, in_process_teammate, local_workflow, monitor_mcp, dream）</td></tr>
+  <tr><td>Runtime Task 输出上限</td><td>内存 8MB → 溢出磁盘，磁盘上限 5GB</td></tr>
+  <tr><td>Task List 隐藏延迟</td><td>全部完成后 5s 自动隐藏 + 清空</td></tr>
+  <tr><td>claimTask busy-check</td><td>可选，Swarm 模式下任务级 + 列表级双重锁</td></tr>
+  <tr><td>Task ID 格式</td><td>前缀字母 + 8 位 base36，2.8T 组合防暴力碰撞</td></tr>
+  <tr><td>高水位标记</td><td><code class="inline">.highwatermark</code> 文件，删除任务后防止 ID 复用</td></tr>
+</table>
+
+<h2>二、子系统一：Work-Graph Task（持久任务图）</h2>
+
+<div class="callout callout-tip">
+  <p style="margin:0">对应 s12 教学：<strong>持久化工作图 + 依赖解析</strong>。教学代码以 <code class="inline">.tasks/task_N.json</code> 文件 + <code class="inline">TaskManager</code> CRUD 展示了最小模型，生产代码在此基础上扩充了并发安全、Swarm 协同、Hook 系统和 UI 集成。</p>
+</div>
+
+<h3>2.1 数据结构</h3>
+<p>定义于 <code class="inline">src/utils/tasks.ts</code>，使用 Zod 做运行时验证：</p>
+
+<div class="flow">// TaskSchema（Zod 验证）
+{
+  id: string,              // 递增整数，转为字符串存储
+  subject: string,          // 任务标题
+  description: string,      // 任务描述
+  activeForm?: string,      // 进行时态文案（如 "Running tests"）
+  owner?: string,           // 认领 Agent 的 ID
+  status: 'pending' | 'in_progress' | 'completed',
+  blocks: string[],         // 该任务阻塞了哪些任务
+  blockedBy: string[],      // 哪些任务阻塞了该任务
+  metadata?: Record&lt;string, unknown&gt;  // 任意元数据
+}</div>
+
+<h3>2.2 存储布局</h3>
+
+<div class="flow">~/.claude/tasks/{taskListId}/
+  .highwatermark       ← 最大 ID 标记（防止删除后 ID 复用）
+  .lock                ← proper-lockfile 锁文件
+  1.json               ← task.id = "1"
+  2.json               ← task.id = "2"
+  ...</div>
+
+<p><code class="inline">taskListId</code> 的解析优先级（<code class="inline">getTaskListId()</code>）：</p>
+<ol style="margin:4px 0;padding-left:18px">
+  <li><code class="inline">CLAUDE_CODE_TASK_LIST_ID</code> 环境变量 — 显式指定</li>
+  <li>Teammate context → 同队成员的 team name（共享任务列表）</li>
+  <li><code class="inline">getTeamName()</code> — 进程级团队成员</li>
+  <li><code class="inline">leaderTeamName</code> — 队长创建队伍时设置</li>
+  <li><code class="inline">getSessionId()</code> — 独立会话</li>
+</ol>
+
+<h3>2.3 核心操作：6 个工具</h3>
+
+<table>
+  <thead>
+    <tr><th>工具</th><th>功能</th><th>关键行为</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code class="inline">TaskCreate</code></td><td>创建任务</td><td>文件锁分配 ID → 写入 JSON → 执行 TaskCreated hooks → 阻塞 hook 回滚删除 → 自动展开 UI</td></tr>
+    <tr><td><code class="inline">TaskGet</code></td><td>查看单个任务</td><td>读文件 → Zod 验证 → 返回完整详情（含 blocks/blockedBy）</td></tr>
+    <tr><td><code class="inline">TaskList</code></td><td>列出所有任务</td><td>过滤 <code class="inline">_internal</code> 元数据 → 过滤已完成的 blockedBy → 按 ID 排序</td></tr>
+    <tr><td><code class="inline">TaskUpdate</code></td><td>更新任务</td><td>检查存在 → 锁定 → 更新字段。状态变更时触发 hooks。blockedBy/addBlocks 调用 <code class="inline">blockTask()</code> 双向维护依赖。删除时写高水位标记 + 清理被引用关系</td></tr>
+  </tbody>
+</table>
+
+<h3>2.4 并发安全：文件锁</h3>
+
+<p>生产代码和教学代码最根本的差异之一：生产代码需要处理<strong>多个 Claude 进程同时操作任务列表</strong>（Swarm 模式）。</p>
+
+<div class="card">
+  <h4 style="margin-top:0">三层锁策略</h4>
+  <table>
+    <tr><th>锁范围</th><th>文件</th><th>用途</th></tr>
+    <tr><td><strong>任务列表级</strong></td><td><code class="inline">.lock</code></td><td>创建任务（ID 分配）、claimTask with busy-check、resetTaskList</td></tr>
+    <tr><td><strong>任务文件级</strong></td><td><code class="inline">{id}.json</code></td><td>更新单个任务、claimTask（无 busy-check）</td></tr>
+    <tr><td><strong>无锁路径</strong></td><td>—</td><td>读操作（getTask, listTasks）：只做原子性文件读取</td></tr>
+  </table>
+  <div class="callout-tip callout" style="margin-top:6px">
+    <p style="margin:0"><strong>设计要点：</strong>锁的粒度和作用域精确匹配操作语义。<code class="inline">claimTaskWithBusyCheck</code> 需要读所有任务来判断 agent 是否繁忙，因此使用列表级锁；简单的状态更新只需要任务文件级锁。锁超时使用 proper-lockfile 的 retry 选项（30 次 × 逐步退避），避免即时失败。</p>
+  </div>
+</div>
+
+<h3>2.5 依赖关系：双向维护</h3>
+
+<p><code class="inline">blockTask(fromTaskId, toTaskId)</code> 是依赖管理的核心函数：</p>
+<div class="flow">A 阻塞 B（A→B）：
+  1. A.blocks 中加入 B 的 ID
+  2. B.blockedBy 中加入 A 的 ID
+  → 完成 A 后 B 自动解除阻塞
+  → B 的 is_ready = pending &amp;&amp; blockedBy 为空</div>
+
+<p><code class="inline">TaskList</code> 工具返回的 <code class="inline">blockedBy</code> 会智能过滤已完成的阻塞任务——模型看到的 blockedBy 永远是"仍然需要等待的任务"。</p>
+
+<h3>2.6 Hook 系统集成</h3>
+
+<p>两个 Hook 事件：<code class="inline">TaskCreated</code> 和 <code class="inline">TaskCompleted</code>。执行方式与所有其他工具 Hook 一致：</p>
+<ul style="margin:4px 0;padding-left:18px">
+  <li>Hook 可以返回阻塞错误（exit code 2），此时任务创建/完成被回滚</li>
+  <li><code class="inline">TaskCreate</code> 阻塞 → 自动 <code class="inline">deleteTask()</code> 回滚</li>
+  <li><code class="inline">TaskUpdate</code> 完成阻塞 → 返回 error 但不回滚已有改动</li>
+</ul>
+
+<h3>2.7 UI 自动隐藏</h3>
+
+<div class="card">
+  <div class="call-chain">
+    <div><span class="func">TasksV2Store</span> <span class="comment">— 单例 React Store</span></div>
+    <div><span class="arrow">├─</span> 所有任务完成 → 启动 5s 定时器</div>
+    <div><span class="arrow">├─</span> 5s 后验证仍全部完成 → <span class="func">resetTaskList()</span> 清空</div>
+    <div><span class="arrow">├─</span> 有新未完成任务 → 取消定时器</div>
+    <div><span class="arrow">└─</span> 隐藏后 → 自动折叠 expandedView 为 'none'</div>
+  </div>
+  <p style="margin:6px 0 0;font-size:0.88em;color:var(--text-dim)">设计意图：完成任务后 5s 清空，保持 UI 整洁。同时用户完成任务时有足够时间看到完成状态。</p>
+</div>
+
+<h3>2.8 与 s12 教学代码的对应</h3>
+
+<table>
+  <thead>
+    <tr><th>功能</th><th>s12 教学代码</th><th>Claude Code 生产代码</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>存储</td><td><code class="inline">.tasks/task_N.json</code></td><td><code class="inline">~/.claude/tasks/{taskListId}/N.json</code></td></tr>
+    <tr><td>ID 生成</td><td>自增计数器</td><td>文件锁 + 高水位标记防止删除后复用</td></tr>
+    <tr><td>依赖管理</td><td>双向：update() 同时维护 blocks/blockedBy</td><td><code class="inline">blockTask()</code> 函数 + TaskUpdate 的 addBlocks/addBlockedBy</td></tr>
+    <tr><td>完成任务解锁</td><td>扫描所有任务移除 blockedBy</td><td>TaskList 过滤已完成的 blockedBy（非破坏性）</td></tr>
+    <tr><td>并发安全</td><td>无</td><td>proper-lockfile 按范围锁 + 30 次重试</td></tr>
+    <tr><td>工具</td><td>create/update/list/get</td><td>Create/Update/List/Get + 元数据 + activeForm</td></tr>
+    <tr><td>Hook</td><td>无</td><td>TaskCreated / TaskCompleted 事件</td></tr>
+    <tr><td>验证</td><td>无</td><td>Zod Schema 运行时验证 + 状态迁移合法性检查</td></tr>
+    <tr><td>除名（deleted）</td><td>状态值 <code class="inline">deleted</code></td><td>删除文件 + 清理被引用处 + 写高水位标记</td></tr>
+    <tr><td>删除后清理</td><td>只标记状态</td><td>遍历所有任务移除引用 → 写高水位标记</td></tr>
+    <tr><td>Teammate 分配</td><td>owner 字段</td><td>owner 字段 + mailbox 通知 + claimTask 原子认领</td></tr>
+    <tr><td>UI</td><td>控制台打印</td><td>React useSyncExternalStore + fs.watch + 5s 隐藏 + 自动展开</td></tr>
+  </tbody>
+</table>
+
+<h2>三、子系统二：Runtime Task（运行时执行槽）</h2>
+
+<div class="callout callout-tip">
+  <p style="margin:0;font-size:0.9em">对应 s13 教学：<strong>后台命令执行 + 通知队列</strong>。生产代码中这比 s12 的 Work-Graph Task 早了约一年出现——最初只有 Bash 执行，后来逐步演化为多类型执行框架。</p>
+</div>
+
+<h3>3.1 7 种执行类型</h3>
+
+<table>
+  <thead>
+    <tr><th>类型</th><th>ID 前缀</th><th>描述</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code class="inline">local_bash</code></td><td>b</td><td>本地 shell 命令执行（最常用）</td></tr>
+    <tr><td><code class="inline">local_agent</code></td><td>a</td><td>本地子 agent（主循环 fork 的子会话）</td></tr>
+    <tr><td><code class="inline">remote_agent</code></td><td>r</td><td>远程 agent 执行</td></tr>
+    <tr><td><code class="inline">in_process_teammate</code></td><td>t</td><td>进程内队友（Swarm 模式）</td></tr>
+    <tr><td><code class="inline">local_workflow</code></td><td>w</td><td>workflow 脚本执行</td></tr>
+    <tr><td><code class="inline">monitor_mcp</code></td><td>m</td><td>MCP 监控</td></tr>
+    <tr><td><code class="inline">dream</code></td><td>d</td><td>夜间记忆整合</td></tr>
+  </tbody>
+</table>
+
+<p>注册机制（<code class="inline">src/tasks.ts:getTaskByType()</code>）：</p>
+<div class="flow">getTaskByType(type):
+  1. 从 getAllTasks() 获取所有 Task 实现
+  2. 按 type 匹配 → 返回对应的 { name, type, kill } 对象
+
+  Task 接口：{ name, type, kill(taskId, setAppState) }
+  每个 type 只暴露 kill() 方法——spawn/render 由各自模块处理</div>
+
+<h3>3.2 运行时状态模型</h3>
+
+<div class="flow">// TaskStateBase（src/Task.ts:45-57）
+{
+  id: string,               // 前缀 + 8 位 base36
+  type: TaskType,            // 7 种之一
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'killed',
+  description: string,       // 任务描述
+  toolUseId?: string,        // 触发该任务的 tool_use ID
+  startTime: number,         // 开始时间戳
+  endTime?: number,          // 结束时间戳
+  totalPausedMs?: number,    // 暂停总时长
+  outputFile: string,        // 输出文件路径
+  outputOffset: number,      // 已读取偏移量
+  notified: boolean,         // 通知标记
+}</div>
+
+<p>存储在 AppState 的 <code class="inline">tasks</code> 字段：</p>
+<div class="pre">AppState.tasks: { [taskId: string]: TaskState }</div>
+
+<h3>3.3 输出管理</h3>
+
+<p>每个 Runtime Task 创建时自动分配输出文件：</p>
+<div class="flow">&lt;project&gt;/&lt;temp&gt;/{sessionId}/tasks/{taskId}.output
+
+TaskOutput 类（src/utils/task/TaskOutput.ts）：
+  ├─ 文件模式（bash）：stdout/stderr 直接写磁盘文件，不经过 JS
+  │    通过文件 tail 轮询（1s/次）提取进度显示
+  │
+  ├─ 管道模式（hooks）：先内存缓冲（8MB），溢出后写磁盘（5GB 上限）
+  │    写入使用 diskOutput.ts：#drain() 批量写入
+  │
+  └─ 安全性：O_NOFOLLOW 防止沙箱 symlink 攻击
+        O_EXCL 防止输出文件被预创建</div>
+
+<h3>3.4 停止任务</h3>
+
+<p><code class="inline">stopTask()</code>（<code class="inline">src/tasks/stopTask.ts</code>）同时被 TaskStopTool 和 SDK stop_task 调用：</p>
+<div class="flow">stopTask(taskId, { getAppState, setAppState }):
+  1. 查找任务 → 检查 status === 'running'
+  2. getTaskByType(type) → 获取 kill 实现
+  3. taskImpl.kill(taskId, setAppState)
+  4. bash 任务静默抑制 exit 137 通知
+  5. 发送 SDK 终止事件 (emitTaskTerminatedSdk)</div>
+
+<h2>四、系统提示词集成</h2>
+
+<h3>4.1 提示词中的任务指引</h3>
+
+<p>在 <code class="inline">getUsingYourToolsSection()</code>（<code class="inline">prompts.ts:269</code>）中，系统提示词通过发现 TaskCreate 工具是否开启来决定注入什么内容：</p>
+
+<div class="flow">工具集构造：
+  // 从 TaskCreate 和 TodoWrite 中找出当前启用的那一个
+  const taskToolName = [TASK_CREATE_TOOL_NAME, TODO_WRITE_TOOL_NAME]
+    .find(n => enabledTools.has(n))
+
+  如果是 TaskCreate（TodoV2 模式）→
+    "Break down and manage your work with the {TaskCreate} tool.
+     These tools are helpful for planning your work and helping
+     the user track your progress. Mark each task as completed
+     as soon as you are done with the task. Do not batch up
+     multiple tasks before marking them as completed."
+
+  如果是 TodoWrite（传统模式）→ 同上，模板中替换工具名</div>
+
+<h3>4.2 TodoV2 vs TodoWrite 互斥</h3>
+
+<p><code class="inline">TaskCreateTool.isEnabled()</code> 和 <code class="inline">TodoWriteTool.isEnabled()</code> 互斥：</p>
+<ul style="margin:4px 0;padding-left:18px">
+  <li>TodoV2 模式（<code class="inline">isTodoV2Enabled()</code>）→ 启用 TaskCreate/Update/List/Get 工具</li>
+  <li>非交互模式默认强制开启 TodoV2（<code class="inline">CLAUDE_CODE_ENABLE_TASKS</code> 环境变量）</li>
+  <li>传统 TodoWrite 只在 TodoV2 关闭时启用</li>
+</ul>
+
+<h3>4.3 工具提示词架构</h3>
+
+<p>每个任务工具的 <code class="inline">prompt()</code> 方法返回详细的 LLM 使用指南。以 TaskCreate 举例：</p>
+<div class="flow">TaskCreate 提示词结构：
+  1. 何时使用：3+ 步骤复杂任务、用户明确要求、Plan 模式等
+  2. 何时不使用：单步任务、会话性对话
+  3. 字段说明：subject / description / activeForm
+  4. 提示：创建后使用 TaskUpdate 设置依赖关系
+  5. Swarm 模式下额外提示：描述需足够让其他 agent 执行</div>
+
+<h2>五、Swarm 模式下的任务协同</h2>
+
+<div class="callout callout-tip">
+  <p style="margin:0"><strong>Swarm 模式是驱动 Task 系统复杂性的核心场景。</strong>没有 Swarm，任务系统可以保持内存文件读写；Swarm 引入了文件锁、claim 协议、mailbox 通知、agent 繁忙检查等一系列复杂性。</p>
+</div>
+
+<h3>5.1 任务即编排契约</h3>
+
+<p>在 Swarm 模式下，Work-Graph Task 成为多 agent 协同的核心数据结构：</p>
+
+<div class="flow">队长 (Team Leader)
+  ├─ 创建任务 → TaskList 被设置为团队名称
+  ├─ 分配任务 → TaskUpdate 设置 owner
+  ├─ 通过 mailbox 通知具体 teammate
+  └─ 监控各 agent 状态
+
+队友 (Teammate)
+  ├─ 完成任务 → TaskList 查找下一项可用任务
+  ├─ 认领 (claimTask) → 原子性地检查 + 分配 owner
+  └─ 被阻塞 → 通知队长
+
+任务列表文件锁
+  └─ 多个 Claude 进程同时操作同一任务列表
+     └─ proper-lockfile 防止冲突</div>
+
+<h3>5.2 原子认领协议</h3>
+
+<div class="card">
+  <div class="call-chain">
+    <div><span class="func">claimTask(taskListId, taskId, agentId, opts?)</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> 简单路径（默认）:</div>
+    <div class="indent-2"><span class="arrow">├─</span> 锁定任务文件</div>
+    <div class="indent-2"><span class="arrow">├─</span> 检查: not_found? → 失败</div>
+    <div class="indent-2"><span class="arrow">├─</span> 检查: 已被他人认领? → already_claimed</div>
+    <div class="indent-2"><span class="arrow">├─</span> 检查: 已完成? → already_resolved</div>
+    <div class="indent-2"><span class="arrow">├─</span> 检查: 未解析的 blocker? → blocked</div>
+    <div class="indent-2"><span class="arrow">└─</span> 设置 owner → 成功</div>
+    <div class="indent-1"><span class="arrow">└─</span> busy-check 路径 (opts.checkAgentBusy = true):</div>
+    <div class="indent-2"><span class="arrow">├─</span> 锁定整个任务列表</div>
+    <div class="indent-2"><span class="arrow">├─</span> 读所有任务 → 原子性判断 agent 是否已持有多条开放任务</div>
+    <div class="indent-2"><span class="arrow">├─</span> 已有开放任务 → agent_busy (含 busyWithTasks 列表)</div>
+    <div class="indent-2"><span class="arrow">└─</span> 空闲 → 认领</div>
+  </div>
+  <p style="margin:6px 0 0;font-size:0.88em;color:var(--text-dim)">这种双层协议确保了"一个 agent 一次只做一件事"的语义，且避免 TOCTOU 竞争条件。</p>
+</div>
+
+<h3>5.3 队友离开时的清理</h3>
+
+<p><code class="inline">unassignTeammateTasks()</code> 处理队友被杀死或正常关闭的场景：</p>
+<div class="flow">teammate 终止/关闭
+  ├─ 遍历所有开放任务，owner == teammate 的
+  ├─ updateTask: owner → undefined, status → pending
+  ├─ 汇总被释放的任务列表
+  └─ 通知队长: "X was terminated/shut down. N task(s) unassigned"</div>
+
+<h3>5.4 自动任务看门狗</h3>
+
+<p><code class="inline">useTaskListWatcher</code> Hook 使任务列表模式可以完全自动化：</p>
+
+<div class="card">
+  <div class="call-chain">
+    <div><span class="func">useTaskListWatcher(props)</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> fs.watch 监听任务目录变更（1s debounce）</div>
+    <div class="indent-1"><span class="arrow">├─</span> 不处于加载状态时检查可用任务</div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">findAvailableTask</span>: pending + 无 owner + blocker 已全部完成</div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">claimTask</span> 原子认领</div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">formatTaskAsPrompt</span> → 提交给主循环</div>
+    <div class="indent-1"><span class="arrow">└─</span> 提交失败 → 释放认领</div>
+  </div>
+  <p style="margin:6px 0 0;font-size:0.88em;color:var(--text-dim)">这个 Hook 使得 Claude 可以像一个 CI worker 一样持续从任务队列拉取任务执行，无需手动触发。</p>
+</div>
+
+<h2>六、历史演变：TodoWrite → TodoV2</h2>
+
+<p>任务系统经历了从 <code class="inline">TodoWrite</code> 到 <code class="inline">TaskCreate/TaskList/TaskGet/TaskUpdate</code> 的重构（V2 化）：</p>
+
+<table>
+  <thead>
+    <tr><th>维度</th><th>TodoWrite（传统）</th><th>TodoV2 / Task Tools</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>数据结构</td><td>AppState 内的内存数组</td><td>磁盘 JSON 文件</td></tr>
+    <tr><td>持久性</td><td>不跨会话</td><td>跨会话（<code class="inline">~/.claude/tasks/</code>）</td></tr>
+    <tr><td>依赖管理</td><td>无</td><td>blocks / blockedBy 双向图</td></tr>
+    <tr><td>并发安全</td><td>无（单进程）</td><td>proper-lockfile 文件锁</td></tr>
+    <tr><td>Swarm 支持</td><td>无</td><td>claimTask + mailbox + agent 状态查询</td></tr>
+    <tr><td>Hook</td><td>无</td><td>TaskCreated / TaskCompleted</td></tr>
+    <tr><td>元数据</td><td>无</td><td>metadata map + activeForm</td></tr>
+  </tbody>
+</table>
+
+<h3>重要的设计迁移细节</h3>
+<div class="card">
+  <p><strong>状态名迁移：</strong>早期版本使用 <code class="inline">open</code>/<code class="inline">resolved</code> 等状态名。<code class="inline">getTask()</code> 中有一个兼容性迁移逻辑，将 ant 用户旧数据中的 <code class="inline">open</code> → <code class="inline">pending</code>，<code class="inline">resolved</code> → <code class="inline">completed</code>，<code class="inline">planning/implementing/reviewing/verifying</code> → <code class="inline">in_progress</code>。</p>
+</div>
+
+<h2>七、任务系统的数据流全貌</h2>
+
+<div class="flow">                    ┌──────────────────────────────────────┐
+                    │            LLM 循环                     │
+                    │  系统提示词：使用 TaskCreate 管理进度      │
+                    └──────────────────────────────────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+            TaskCreateTool   TaskUpdateTool    TaskListTool
+                    │               │               │
+                    ▼               ▼               ▼
+            ┌──────────────────────────────────────────┐
+            │         src/utils/tasks.ts                │
+            │                                          │
+            │   createTask() ← 文件锁分配 ID            │
+            │   updateTask() ← 文件级锁                  │
+            │   claimTask()  ← 双层锁原子操作            │
+            │   blockTask()  ← 双向维护依赖              │
+            │   listTasks()  ← 读目录 + Zod 验证        │
+            │   deleteTask() ← 高水位标记 + 清理引用     │
+            └──────────────────────────────────────────┘
+                            │
+                            ▼
+            ┌──────────────────────────────────────────┐
+            │      磁盘：~/.claude/tasks/{id}/           │
+            │                                          │
+            │  .lock       ← proper-lockfile 锁文件     │
+            │  .highwatermark ← 最大 ID 标记             │
+            │  1.json      ← task 数据                  │
+            │  2.json      ← task 数据                  │
+            └──────────────────────────────────────────┘
+                            │
+                            ▼
+            ┌──────────────────────────────────────────┐
+            │           React UI 集成                   │
+            │                                          │
+            │  TasksV2Store (单例)                       │
+            │  ├─ fs.watch 监听文件变更                   │
+            │  ├─ useSyncExternalStore 注入                │
+            │  ├─ 5s 全部完成 → 自动隐藏清空               │
+            │  └─ fallback 轮询 5s（有未完成任务时）       │
+            │                                          │
+            │  useTaskListWatcher                        │
+            │  └─ 自动认领 + 提交任务                     │
+            └──────────────────────────────────────────┘
+
+  ──── 第二子系统：Runtime Task ────
+
+            ┌──────────────────────────────────────────┐
+            │        src/tasks/ 目录                    │
+            │                                          │
+            │  Task类型注册 → getTaskByType()            │
+            │  ├─ LocalShellTask                        │
+            │  ├─ LocalAgentTask                        │
+            │  ├─ RemoteAgentTask                       │
+            │  ├─ InProcessTeammateTask                  │
+            │  ├─ LocalWorkflowTask (门控)               │
+            │  ├─ MonitorMcpTask (门控)                  │
+            │  └─ DreamTask                             │
+            └──────────────────────────────────────────┘
+                            │
+                            ▼
+            ┌──────────────────────────────────────────┐
+            │        AppState.tasks                     │
+            │        { [id]: TaskStateBase }            │
+            │        仅运行时活动任务                    │
+            └──────────────────────────────────────────┘
+                            │
+                            ▼
+            ┌──────────────────────────────────────────┐
+            │        TaskOutput + DiskTaskOutput        │
+            │                                          │
+            │  bash 模式: 文件 fd 直写                    │
+            │  hook 模式: 内存 8MB → 磁盘 5GB           │
+            │  安全性: O_NOFOLLOW + O_EXCL              │
+            └──────────────────────────────────────────┘</div>
+
+<h2>八、代码引用索引</h2>
+
+<h3>核心层 — Work-Graph Task 存储与操作</h3>
+<div class="file-ref"><span class="path">src/utils/tasks.ts</span><span class="role">TodoV2 任务系统核心。TaskSchema / TaskStatusSchema（76-88）、createTask() 文件锁创建（284-308）、getTask() Zod 验证 + 旧状态迁移（310-350）、updateTask() 文件级锁定（370-391）、deleteTask() 高水位标记+引用清理（393-441）、listTasks() 读目录（443-456）、blockTask() 双向依赖（458-486）、claimTask() 双层原子认领（541-692）、unassignTeammateTasks() 清理（818-860）、getAgentStatuses() 团队状态（763-798）</span></div>
+<div class="file-ref"><span class="path">src/utils/task/diskOutput.ts</span><span class="role">Runtime Task 输出文件管理。getTaskOutputPath()（72-74）、DiskTaskOutput 异步写队列（97-231）、initTaskOutput() O_EXCL 创建（400-421）、getTaskOutputDelta() 增量读取（304-330）、MAX_TASK_OUTPUT_BYTES=5GB（30）</span></div>
+
+<h3>Task 类型系统与注册</h3>
+<div class="file-ref"><span class="path">src/Task.ts</span><span class="role">Runtime Task 类型定义。TaskType 7 种（6-13）、TaskStatus 5 种（15-20）、isTerminalTaskStatus()（27-29）、TaskStateBase（45-57）、generateTaskId() 前缀+8位base36（98-106）、createTaskStateBase()（108-125）</span></div>
+<div class="file-ref"><span class="path">src/tasks.ts</span><span class="role">Task 注册表。getAllTasks() 返回 5+2 种实现（22-32）、getTaskByType() 类型查找（37-39）、LocalWorkflowTask / MonitorMcpTask 使用 feature() 门控条件导入</span></div>
+<div class="file-ref"><span class="path">src/tasks/types.ts</span><span class="role">TaskState 联合类型。TaskState = 7 种具体状态的联合（12-19）、BackgroundTaskState + isBackgroundTask() 守卫函数（22-46）</span></div>
+<div class="file-ref"><span class="path">src/state/AppStateStore.ts</span><span class="role">AppState 状态定义。tasks 字段（160）、expandedView: 'tasks'（95）</span></div>
+
+<h3>Work-Graph Task 工具</h3>
+<div class="file-ref"><span class="path">src/tools/TaskCreateTool/TaskCreateTool.ts</span><span class="role">创建任务。锁分配 ID + TaskCreated hooks（80-129）、阻塞 hook → deleteTask 回滚（92-113）、自动展开 UI（116-119）</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskUpdateTool/TaskUpdateTool.ts</span><span class="role">更新任务。状态迁移 + hooks（123-363）、auto-set owner for swarm（188-199）、deleteTask 分支（214-227）、blockTask 双向依赖（301-324）、verification nudge（334-349）、mailbox 通知（277-298）</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskListTool/TaskListTool.ts</span><span class="role">列出任务。过滤 _internal 元数据（69-70）、智能 blockedBy — 过滤已完成的阻塞任务（82-83）</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskGetTool/TaskGetTool.ts</span><span class="role">获取单任务。getTask() + 格式化输出</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskStopTool/TaskStopTool.ts</span><span class="role">停止运行时任务。TaskStop + KillShell 兼容别名（40-131）、validateInput 检查 status===running（60-91）</span></div>
+
+<h3>Task Tool 提示词</h3>
+<div class="file-ref"><span class="path">src/tools/TaskCreateTool/prompt.ts</span><span class="role">LLM 使用指南：何时使用、字段说明、Swarm 提示</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskUpdateTool/prompt.ts</span><span class="role">更新指南：状态工作流、阻止条件、示例</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskListTool/prompt.ts</span><span class="role">列表指南：Teammate Workflow（Swarm 模式下自动认领任务流）</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskGetTool/prompt.ts</span><span class="role">查看指南：检查 blockedBy 再开始工作</span></div>
+
+<h3>Hook 集成</h3>
+<div class="file-ref"><span class="path">src/utils/hooks.ts</span><span class="role">executeTaskCreatedHooks（3745-3773）、executeTaskCompletedHooks（3789-3817）、TaskCreatedHookInput / TaskCompletedHookInput 类型</span></div>
+
+<h3>UI 与状态管理</h3>
+<div class="file-ref"><span class="path">src/hooks/useTasksV2.ts</span><span class="role">TasksV2Store 单例。useSyncExternalStore 集成（29-199）、fs.watch 监听 + 5s 隐藏定时器 + fallback 轮询（113-152）、useTasksV2() / useTasksV2WithCollapseEffect() 两个 Hook</span></div>
+<div class="file-ref"><span class="path">src/hooks/useTaskListWatcher.ts</span><span class="role">Task list 看门狗。findAvailableTask()（197-208）、formatTaskAsPrompt()（213-221）、claimTask 原子认领（98）</span></div>
+<div class="file-ref"><span class="path">src/hooks/useBackgroundTaskNavigation.ts</span><span class="role">Runtime Task 键盘导航。Shift+Up/Down 切换背景任务（147-189）</span></div>
+
+<h3>Runtime Task 实现</h3>
+<div class="file-ref"><span class="path">src/tasks/stopTask.ts</span><span class="role">停止运行时任务的公共逻辑。stopTask() 查找+验证+kill+通知（38-100）、StopTaskError 三种错误码</span></div>
+<div class="file-ref"><span class="path">src/utils/task/TaskOutput.ts</span><span class="role">Task 输出管理。TaskOutput 类（32-390）、文件/管道双模式、1s 轮询进度、内存 8MB→磁盘溢出</span></div>
+
+<h3>Cron / 定时任务</h3>
+<div class="file-ref"><span class="path">src/utils/cronTasks.ts</span><span class="role">定时任务调度。CronTask 类型（30-70）、持久化到 .claude/scheduled_tasks.json</span></div>
+
+<h3>系统提示词集成</h3>
+<div class="file-ref"><span class="path">src/constants/prompts.ts</span><span class="role">getUsingYourToolsSection()（269-313）— 根据启用的 task tool 注入"管理进度"提示</span></div>
+
+<h2>九、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px">设计哲学：<strong>"任务系统是两类完全不同的事物的统一名称。"</strong></p>
+  <p style="margin:0">生产 Claude Code 中的"任务"一词同时承载了计划编排（Work-Graph Task）和运行时执行（Runtime Task）两个概念。教学代码的 s12 和 s13 分别对应这两个子系统，但教学代码中两者独立、互不干扰；而生产代码中两者共享了"task"这个术语，却在数据结构、存储位置、生命周期、并发模型上完全不同。理解这个区分是理解 Claude Code 任务架构的关键。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">并发安全</td><td>✅ 三层锁策略（列表级/文件级/无锁）覆盖不同操作。proper-lockfile 30 次重试容忍 ~10 进程同时操作</td></tr>
+    <tr><td>可扩展性</td><td>✅ Runtime Task 的 7 种类型插件化注册。新增一种 task 只需实现 { name, type, kill } 接口并注册</td></tr>
+    <tr><td>命名混淆</td><td>⚠️ "Task"同时指两个完全不同的概念。Work-Graph 任务和 Runtime 任务的数据结构、生命周期、代码位置完全不同，但共享同一个词汇。新读者几乎必然混淆</td></tr>
+    <tr><td>持久化策略</td><td>✅ Work-Graph 任务全量磁盘持久（JSON 文件），跨会话存活。Runtime 任务状态在内存，输出文件在临时目录，进程结束后可清理</td></tr>
+    <tr><td>Swarm 协同</td><td>✅ 任务即编排契约：claimTask + mailbox + agent 状态查询 + busy-check 构成完整的多 agent 协同协议</td></tr>
+    <tr><td>Hook 集成</td><td>✅ TaskCreated/TaskCompleted 阻塞 hook 让外部脚本可以控制任务生命周期——例如 CI/CD 闸门</td></tr>
+    <tr><td>UI 设计</td><td>✅ 5s 自动隐藏 + useSyncExternalStore 单一订阅源 + fs.watch 文件级监听——全站只有一个文件 watcher</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">从教学代码到生产的演进启示</h4>
+  <ol style="margin:4px 0;padding-left:18px">
+    <li><strong>Task 命名在大型系统中需要更精确。</strong>教学代码的 s12 "任务" 和 s13 "后台任务" 清楚地区分了"工作目标"和"执行槽"。生产代码中二者都叫 "task"，但代码路径完全不同。如果重来一次，"work-item" 和 "execution-slot" 的命名区分会更清晰</li>
+    <li><strong>并发安全是教学到生产的最大鸿沟。</strong>s12 的教学代码假设单进程单用户。生产代码中 Swarm 模式需要文件锁、原子认领、TOCTOU 防护——增加了约 70% 的代码复杂度</li>
+    <li><strong>Hook 系统使任务可编程。</strong>TaskCreated/TaskCompleted hooks 让任务系统成为更大的自动化流程的一部分，而不仅仅是模型内部的计划工具</li>
+    <li><strong>不要低估 UI 集成的复杂度。</strong>任务工具的提示词、useSyncExternalStore 的 React 集成、5s 隐藏逻辑、fallback 轮询——UI 部分的代码量和业务逻辑层几乎相当</li>
+    <li><strong>状态迁移需要向后兼容。</strong>从 open→pending、resolved→completed 的迁移代码表明，生产系统中数据结构演化比教学代码复杂得多</li>
+  </ol>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 对比 s12_task_system.py 教学代码 · 2026-06-21
+</p>
+
+</div>
+</body>
+</html>

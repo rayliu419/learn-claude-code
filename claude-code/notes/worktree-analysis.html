@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Worktree 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+  .flow { background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace; font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code Worktree 系统设计分析</h1>
+  <p class="sub">基于 git worktree 的隔离执行目录管理：Session/Agent 双路径、git/hook 双模式、安全收尾与过期清理</p>
+  <div class="meta">
+    <span>.claude/worktrees/{slug}</span>
+    <span>worktree-{flattenedSlug} 分支</span>
+    <span>Session + Agent 双路径</span>
+    <span>git + Hook 双 VCS</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的 Worktree 系统是一套<strong>基于 git worktree（或 VCS hook）的隔离执行目录管理框架</strong>。它支持两种工作路径：<strong>Session Worktree</strong>（通过 <code class="inline">EnterWorktreeTool</code> 交互式创建使用）和 <strong>Agent Worktree</strong>（通过 <code class="inline">createAgentWorktree()</code> 为 AgentTool subagent 后台创建）。</p>
+
+<h3>核心概念对比</h3>
+<table>
+  <thead><tr><th>概念</th><th>教学版 (s18)</th><th>生产版 (Claude Code)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>注册表</strong></td><td><code class="inline">.worktrees/index.json</code></td><td><code class="inline">WorktreeSession</code> 内存 + project config</td></tr>
+    <tr><td><strong>分支名</strong></td><td><code class="inline">wt/{name}</code></td><td><code class="inline">worktree-{flattenedSlug}</code>（<code>/</code> → <code>+</code>）</td></tr>
+    <tr><td><strong>目录约定</strong></td><td><code class="inline">.worktrees/{name}/</code></td><td><code class="inline">.claude/worktrees/{flattenedSlug}/</code></td></tr>
+    <tr><td><strong>工作路径</strong></td><td>仅 Session</td><td>Session + Agent 双路径</td></tr>
+    <tr><td><strong>创建工具</strong></td><td><code class="inline">worktrees.create()</code></td><td><code class="inline">getOrCreateWorktree()</code> 含快路径恢复/sparse等</td></tr>
+    <tr><td><strong>后置设置</strong></td><td>无</td><td><code class="inline">performPostCreationSetup()</code> 7 项设置</td></tr>
+    <tr><td><strong>收尾</strong></td><td><code class="inline">worktree_closeout(action)</code></td><td><code class="inline">ExitWorktreeTool</code> + <code class="inline">keepWorktree()</code>/<code class="inline">cleanupWorktree()</code> + 安全检查</td></tr>
+    <tr><td><strong>清理</strong></td><td>无</td><td><code class="inline">cleanupStaleAgentWorktrees()</code> 30 天过期</td></tr>
+    <tr><td><strong>VCS</strong></td><td>git 仅</td><td>git + WorktreeCreate/Remove hooks 双模式</td></tr>
+  </tbody>
+</table>
+
+<h2>二、核心数据结构</h2>
+
+<div class="flow">WorktreeSession {
+  originalCwd: string         // 创建 worktree 前的工作目录
+  worktreePath: string         // worktree 目录 (.claude/worktrees/{slug})
+  worktreeName: string         // slug 名称
+  worktreeBranch?: string      // git 分支 (worktree-{slug})
+  originalBranch?: string      // 创建时的当前分支
+  originalHeadCommit?: string  // 创建时 HEAD（用于 hasWorktreeChanges 对比）
+  sessionId: string
+  tmuxSessionName?: string     // 关联的 tmux session
+  hookBased?: boolean          // VCS hook 模式标记
+  creationDurationMs?: number  // 创建耗时
+  usedSparsePaths?: boolean    // 是否使用了 sparse checkout
+}</div>
+
+<div class="callout-tip callout">
+  <p><strong>重要设计：</strong><code class="inline">WorktreeSession</code> 只有在 Session Worktree（EnterWorktreeTool）时被设置。Agent Worktree (createAgentWorktree) 不 touch 全局 session state，每个 AgentTool 调用独立创建和删除。</p>
+</div>
+
+<h2>三、Worktree 创建流程</h2>
+
+<div class="flow">createWorktreeForSession(sessionId, slug)
+  │
+  ├─ validateWorktreeSlug(slug)
+  │   └─ 长度 ≤ 64 / 无 . 和 .. / 仅 [a-zA-Z0-9._/-]
+  │
+  ├─ hasWorktreeCreateHook()?
+  │   Yes ──→ executeWorktreeCreateHook(slug)
+  │            └─ hookBased: true
+  │
+  │   No ──→ getOrCreateWorktree(gitRoot, slug)
+  │            ├─ readWorktreeHeadSha(path)
+  │            │   └─ 成功? → 快路径恢复（跳过 fetch/creation）
+  │            │
+  │            ├─ options.prNumber?
+  │            │   └─ git fetch origin pull/{N}/head
+  │            │
+  │            ├─ resolveRef('origin/{default}')
+  │            │   └─ 有 origin ref? → skip fetch（省 6-8s）
+  │            │
+  │            ├─ git worktree add -B {branch} {path} {base}
+  │            │   └─ -B 自动重置孤立分支
+  │            │
+  │            ├─ sparse-checkout（可选）
+  │            │   └─ settings.worktree.sparsePaths
+  │            │
+  │            └─ performPostCreationSetup()
+  │                 ├─ 复制 settings.local.json
+  │                 ├─ 配置 core.hooksPath
+  │                 ├─ 符号链接目录（node_modules 等）
+  │                 ├─ 复制 .worktreeinclude 文件
+  │                 └─ 安装 attribution commit hook
+  │
+  └─ saveCurrentProjectConfig({ activeWorktreeSession })
+      └─ 保存到项目配置</div>
+
+<h2>四、两种 Worktree 路径</h2>
+
+<h3>Session Worktree（EnterWorktreeTool）</h3>
+<div class="flow">EnterWorktreeTool.call(input)
+  ├─ 检查 getCurrentWorktreeSession()        ← 防嵌套
+  ├─ process.chdir(mainRepoRoot)              ← 确保从主仓库根目录创建
+  ├─ createWorktreeForSession(sessionId, slug)
+  ├─ process.chdir(worktreePath)
+  ├─ setCwd(worktreePath)
+  ├─ setOriginalCwd()                         ← 更新 bootstrap state
+  ├─ saveWorktreeState()                      ← session storage 持久化
+  └─ clearSystemPromptSections()              ← 刷新环境提示词</div>
+
+<h3>Agent Worktree（createAgentWorktree）</h3>
+<div class="flow">// 用于 AgentTool isolation: "worktree"
+createAgentWorktree(slug)
+  ├─ 不设 currentWorktreeSession
+  ├─ 不 process.chdir
+  ├─ 不保存 project config
+  ├─ 复用 getOrCreateWorktree() + performPostCreationSetup()
+  └─ 返回 { worktreePath, worktreeBranch, headCommit, gitRoot }
+
+// Subagent 运行时:
+AgentTool(..., isolation: "worktree")
+  ├─ createAgentWorktree(slug)
+  ├─ runAgent({ cwd: worktreePath })
+  ├─ meta.worktreePath = worktreePath          ← resume 时恢复
+  └─ buildWorktreeNotice() → subagent prompt 注入
+
+// 清理:
+removeAgentWorktree(path, branch, gitRoot)
+  ├─ git worktree remove --force {path}
+  ├─ git branch -D worktree-{slug}
+  └─ git worktree prune</div>
+
+<h2>五、Closeout 流程</h2>
+
+<h3>Keep（保留）</h3>
+<div class="flow">keepWorktree()
+  ├─ process.chdir(originalCwd)
+  ├─ currentWorktreeSession = null
+  ├─ config.activeWorktreeSession = undefined
+  └─ worktree 目录 + 分支完好保留
+  └─ 下次可通过 cd {path} 继续工作</div>
+
+<h3>Remove（删除 + 安全检查）</h3>
+<div class="flow">ExitWorktreeTool.call({ action: 'remove' })
+  │
+  ├─ countWorktreeChanges(worktreePath, headCommit)
+  │   ├─ git status --porcelain     → 未提交文件数
+  │   ├─ git rev-list HEAD --not --remotes → 未推送 commit 数
+  │   └─ 任何 > 0 → 必须 discard_changes: true
+  │
+  ├─ cleanupWorktree()
+  │   ├─ hook based? → executeWorktreeRemoveHook()
+  │   ├─ git based?  → git worktree remove --force {path}
+  │   ├─ sleep(100ms) ── 等 git 释放锁
+  │   ├─ git branch -D worktree-{slug}
+  │   └─ config.activeWorktreeSession = undefined
+  │
+  └─ 返回变更摘要: { discardedFiles, discardedCommits }</div>
+
+<h2>六、Stale 过期清理</h2>
+
+<div class="flow">// 仅处理 ephemeral 工作树，保留用户命名的工作树
+EPHEMERAL_PATTERNS = [
+  /^agent-a[0-9a-f]{7}$/,          // AgentTool subagent
+  /^wf_[0-9a-f]{8}-[0-9a-f]{3}-/,  // WorkflowTool
+  /^bridge-[A-Za-z0-9_]+/,         // bridge session
+  /^job-[a-zA-Z0-9._-]+-[0-9a-f]/, // template job
+]
+
+cleanupStaleAgentWorktrees(cutoffDate)
+  ├─ 扫描 .claude/worktrees/
+  ├─ 只处理匹配 EPHEMERAL_PATTERNS 的 slug
+  ├─ 跳过当前 session 的 worktree
+  ├─ 检查 mtime >= cutoffDate（默认 30 天）
+  ├─ 安全检查:
+  │   ├─ git status --porcelain -uno == ''
+  │   └─ git rev-list --max-count=1 HEAD --not --remotes == ''（commits 可远程可达）
+  ├─ removeAgentWorktree()
+  └─ git worktree prune</div>
+
+<h2>七、核心代码引用</h2>
+
+<h3>核心模块</h3>
+<div class="file-ref"><span class="path">src/utils/worktree.ts</span><span class="role">Worktree 总控（1520 行）：创建/恢复/closeout/agent worktree/stale 清理/tmux 集成</span></div>
+<div class="file-ref"><span class="path">src/utils/worktreeModeEnabled.ts</span><span class="role">始终启用（已移除 feature flag）</span></div>
+<div class="file-ref"><span class="path">src/utils/getWorktreePaths.ts</span><span class="role">解析 <code>git worktree list --porcelain</code> 获取所有 worktree 路径</span></div>
+<div class="file-ref"><span class="path">src/utils/getWorktreePathsPortable.ts</span><span class="role">便携版（无 CLI deps）</span></div>
+
+<h3>工具层</h3>
+<div class="file-ref"><span class="path">src/tools/EnterWorktreeTool/EnterWorktreeTool.ts</span><span class="role">Session Worktree 创建工具</span></div>
+<div class="file-ref"><span class="path">src/tools/ExitWorktreeTool/ExitWorktreeTool.ts</span><span class="role">Session Worktree 退出工具（keep/remove + 安全检查）</span></div>
+<div class="file-ref"><span class="path">src/tools/AgentTool/runAgent.ts</span><span class="role">AgentTool 的 worktreePath 传播</span></div>
+<div class="file-ref"><span class="path">src/tools/AgentTool/forkSubagent.ts</span><span class="role">buildWorktreeNotice() subagent 隔离注入</span></div>
+<div class="file-ref"><span class="path">src/tools/AgentTool/resumeAgent.ts</span><span class="role">resume 时 worktree 恢复（bump mtime 防清理）</span></div>
+
+<h3>Swarm 集成</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/teamHelpers.ts</span><span class="role">destroyWorktree() 团队清理中的 worktree 删除</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/spawnUtils.ts</span><span class="role">TeammateSpawnConfig 中的 worktreePath 传播</span></div>
+
+<h3>Setup 集成</h3>
+<div class="file-ref"><span class="path">src/setup.ts</span><span class="role">createWorktreeForSession() 启动时调用</span></div>
+<div class="file-ref"><span class="path">src/bootstrap/state.ts</span><span class="role">--worktree 启动 flag 处理（setOriginalCwd 区分）</span></div>
+<div class="file-ref"><span class="path">src/components/WorktreeExitDialog.tsx</span><span class="role">Worktree 退出 UI 对话框</span></div>
+
+<h2>八、教学版 vs 生产版要点对照</h2>
+
+<table>
+  <thead><tr><th>维度</th><th>教学版 (s18)</th><th>生产版</th></tr></thead>
+  <tbody>
+    <tr><td><strong>注册表</strong></td><td>文件 <code class="inline">.worktrees/index.json</code></td><td>内存 <code class="inline">WorktreeSession</code> + project config</td></tr>
+    <tr><td><strong>安全校验</strong></td><td>无</td><td><code class="inline">validateWorktreeSlug()</code> 路径穿越防护</td></tr>
+    <tr><td><strong>双重路径</strong></td><td>仅 Session（任务绑定）</td><td>Session（交互式）+ Agent（后台）双路径</td></tr>
+    <tr><td><strong>创建策略</strong></td><td>每次都 <code class="inline">git worktree add</code></td><td>快路径恢复 + 慢路径创建 + <code>-B</code> 自动重置</td></tr>
+    <tr><td><strong>后置设置</strong></td><td>无</td><td>7 项：settings、hooks、symlinks、.worktreeinclude、attribution</td></tr>
+    <tr><td><strong>VCS 灵活性</strong></td><td>git 仅</td><td>git + WorktreeCreate/Remove hooks 双模式</td></tr>
+    <tr><td><strong>Sparse Checkout</strong></td><td>无</td><td>支持 <code class="inline">settings.worktree.sparsePaths</code></td></tr>
+    <tr><td><strong>收尾安全</strong></td><td>无</td><td><code class="inline">countWorktreeChanges()</code> 未提交/未推送双重检查</td></tr>
+    <tr><td><strong>过期清理</strong></td><td>无</td><td><code class="inline">cleanupStaleAgentWorktrees()</code> 30 天 + 模式匹配</td></tr>
+    <tr><td><strong>Task 绑定</strong></td><td>Task 显式 <code>worktree</code> 字段</td><td>AgentTool meta.worktreePath + resume 恢复</td></tr>
+    <tr><td><strong>tmux 集成</strong></td><td>无</td><td><code class="inline">execIntoTmuxWorktree()</code> + iTerm2 control mode</td></tr>
+  </tbody>
+</table>
+
+<h2>九、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px"><strong>Worktree 系统设计哲学：</strong>"任务系统管'做什么'，worktree 系统管'在哪做且互不干扰'。"</p>
+  <p style="margin:0">生产版从教学版 s18 的"task → worktree 绑定 + closeout 动作"模型演化为<strong>双路径（Session + Agent）+ 双模式（git + hook）+ 安全收尾 + 过期清理</strong>的完整框架。核心设计差异源于生产需求：worktree 需要同时支持交互式 Session（Enter/Exit）和后台 Agent（创建/删除）两种独立使用方式，需要 fast-resume 优化重复进入的延迟，需要通过 stale cleanup 处理进程崩溃残留。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">隔离性</td><td>✅ git worktree 提供完整目录隔离，互不干扰</td></tr>
+    <tr><td>安全性</td><td>✅ slug 防穿越 + stale 模式防误删 + countWorktreeChanges 防数据丢失</td></tr>
+    <tr><td>灵活性</td><td>✅ git + hook 双 VCS + sparse checkout + 目录符号链接</td></tr>
+    <tr><td>性能</td><td>✅ 快速恢复路径（无子进程）+ -B 免强删 + fetch 跳过</td></tr>
+    <tr><td>资源占用</td><td>⚠️ 每个 worktree 独立 .git 目录占用磁盘</td></tr>
+    <tr><td>复杂度</td><td>⚠️ hook + git + tmux + symlinks 多模式组合</td></tr>
+  </table>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-06-21<br>
+  关联文档: <a href="../../docs/zh/s18-worktree-task-isolation.md" style="color:var(--accent)">教学版 s18 中文文档</a> · <a href="agent-teams-analysis.html" style="color:var(--accent)">Agent Teams 分析</a>
+</p>
+
+</div>
+</body>
+</html>

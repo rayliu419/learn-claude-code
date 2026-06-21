@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 错误恢复系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  /* Hero */
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  /* Container */
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  /* Headings */
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  /* Cards */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  /* Code */
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  /* Badges */
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  /* Flowchart */
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  /* Callout */
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+  .callout-fail { border-left-color:var(--red); background:#fde2e2; }
+
+  /* File refs */
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* Lifecycle bar */
+  .lifecycle-bar { display:flex; border-radius:6px; overflow:hidden; height:28px; margin:8px 0; font-size:0.72em; font-weight:600; }
+  .lifecycle-bar div { display:flex; align-items:center; justify-content:center; }
+
+  /* Lists in cards */
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  /* Call chain */
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .dot { color:var(--border); margin-right:4px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code 错误恢复系统设计分析</h1>
+  <p class="sub">三路恢复、主动预防与死亡螺旋防护 — 从教学代码到生产级实现</p>
+  <div class="meta">
+    <span>s11 → query.ts, withRetry.ts, autoCompact.ts</span>
+    <span>5 种恢复策略 + 2 种预防机制</span>
+    <span>~1729 行主循环</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的错误恢复系统远不止 s11 教学的三种路径。生产代码构建了一套<strong>分层恢复 + 主动预防 + 防护网</strong>的完整体系：</p>
+
+<div class="card">
+  <p style="margin:0"><strong>核心设计思路：</strong>不把所有恢复逻辑塞在一个地方。按错误的性质分派给不同的子系统——API 层的重试由 <code class="inline">withRetry</code> 处理，上下文过长由 <code class="inline">compact</code> 家族处理，输出截断由主循环状态机处理。每个子系统独立演化，通过 query loop 的 <code class="inline">State</code> 状态机串联。</p>
+</div>
+
+<h3>关键数字</h3>
+<table>
+  <tr><td style="width:160px">恢复策略数</td><td>5 种（max_tokens 升级 + 恢复消息 / collapse drain / reactive compact / auto compact / API retry）</td></tr>
+  <tr><td>预防机制</td><td>2 种（token 阈值预警 + 硬阻断）</td></tr>
+  <tr><td>max_output_tokens 重试上限</td><td>3 次（<code class="inline">MAX_OUTPUT_TOKENS_RECOVERY_LIMIT</code>）</td></tr>
+  <tr><td>auto compact 连续失败断路器</td><td>3 次（<code class="inline">MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES</code>）</td></tr>
+  <tr><td>API retry 上限</td><td>10 次（<code class="inline">DEFAULT_MAX_RETRIES</code>）</td></tr>
+  <tr><td>529 退避上限</td><td>3 次 → Opus→Sonnet 降级 or fallback</td></tr>
+  <tr><td>compact summary 保留 token</td><td>20,000（<code class="inline">MAX_OUTPUT_TOKENS_FOR_SUMMARY</code>）</td></tr>
+  <tr><td>base backoff delay</td><td>500ms（<code class="inline">BASE_DELAY_MS</code>）</td></tr>
+  <tr><td>错误分类种类</td><td>20+（timeout, rate_limit, auth, pdf, image, tool_use...）</td></tr>
+</table>
+
+<h3>与 s11 教学的对应关系</h3>
+<table>
+  <thead><tr><th>s11 策略</th><th>Claude Code 对应</th><th>差异</th></tr></thead>
+  <tbody>
+    <tr><td>1. max_tokens continuation</td><td>max_output_tokens recovery — 升级 + 多轮</td><td>增加 8k→64k 静默升级，失败后再发 continuation</td></tr>
+    <tr><td>2. prompt_too_long compact</td><td>collapse drain → reactive compact → auto compact 三层</td><td>先尝试最轻量的 collapse，再 LLM summarize</td></tr>
+    <tr><td>3. connection backoff</td><td>withRetry.ts — 指数退避 + 10 种分类</td><td>细粒度分类处理，fast mode cooldown，persistent 模式</td></tr>
+  </tbody>
+</table>
+
+<h2>二、启动与调用流程</h2>
+
+<div class="card">
+  <h3 style="margin-top:0">完整查询循环中的错误恢复路径</h3>
+  <div class="call-chain">
+    <div><span class="func">queryLoop()</span> <span class="file">[src/query.ts:241]</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">autoCompact()</span> <span class="comment">— 主动预防：检查 token 阈值，提前压缩</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> compactFailed? → <span class="func">tracking.consecutiveFailures</span> 断路器</div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">contextCollapse.applyCollapsesIfNeeded()</span> <span class="comment">— 结构化上下文折叠</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> 硬阻断检查 <span class="comment">— token 超限时返回 blocking_limit 错误</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">callModel()</span> <span class="file">[withRetry.ts]</span> <span class="comment">— API 调用，含内置重试</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> 成功 → <span class="func">*yield</span> 流式消息</div>
+    <div class="indent-2"><span class="arrow">├─</span> 429/529 → 指数退避 retry</div>
+    <div class="indent-2"><span class="arrow">├─</span> 401 → token 刷新 → retry</div>
+    <div class="indent-2"><span class="arrow">├─</span> 529 超过 3 次 → <span class="func">FallbackTriggeredError</span> → 降级模型</div>
+    <div class="indent-2"><span class="arrow">└─</span> 错误无法恢复 → <span class="func">CannotRetryError</span> → 抛至主循环</div>
+
+    <div class="indent-1"><span class="arrow">├─</span> 流式处理错误 <span class="comment">—  withhold 机制</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">isWithheldPromptTooLong()</span> → withhold，等 recovery</div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">isWithheldMediasizeError()</span> → withhold，等 reactive compact</div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">isWithheldMaxOutputTokens()</span> → withhold，等 continuation</div>
+    <div class="indent-2"><span class="arrow">└─</span> 非恢复性错误 → <span class="func">yield</span> 给用户</div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">needsFollowUp = false</span> 分支 <span class="comment">— 错误恢复主战场</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> <strong>路径 A:</strong> prompt_too_long → <span class="func">recoverFromOverflow()</span> [collapse drain]</div>
+    <div class="indent-3"><span class="arrow">└─</span> committed > 0 → retry (collapse_drain_retry)</div>
+    <div class="indent-2"><span class="arrow">├─</span> <strong>路径 B:</strong> prompt_too_long → <span class="func">tryReactiveCompact()</span> [LLM summarize]</div>
+    <div class="indent-3"><span class="arrow">└─</span> compacted → retry (reactive_compact_retry)</div>
+    <div class="indent-2"><span class="arrow">├─</span> <strong>路径 C:</strong> max_output_tokens → <span class="func">8k→64k 升级</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 已尝试升级 → <span class="func">continuation message</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 超过 3 次 → <span class="func">surface error</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">handleStopHooks()</span> <span class="comment">— post-turn hooks</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> blocking errors? → retry (stop_hook_blocking)</div>
+    <div class="indent-2"><span class="arrow">└─</span> 死亡螺旋防护: hasAttemptedReactiveCompact 不重置</div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">token Budget</span> <span class="comment">— +500k 继续</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">runTools()</span> <span class="comment">— 工具执行</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> 错误 → tool_result 文本形式返回（不抛异常）</div>
+
+    <div class="indent-1"><span class="arrow">└─</span> return { reason: 'completed' }</div>
+  </div>
+</div>
+
+<h2>三、五条恢复路径详解</h2>
+
+<h3>路径 1：max_output_tokens 恢复 <span class="badge badge-green">s11 策略 1 增强版</span></h3>
+<p>对应 s11 的"输出截断后发送 continuation"。但生产版本多了<strong>静默扩容</strong>步骤。</p>
+
+<div class="card">
+  <h4 style="margin-top:0">执行顺序</h4>
+  <div class="flow">流式 API 返回 max_output_tokens
+    │
+    ├─ isWithheldMaxOutputTokens() = true → withhold，不 yield 给用户
+    │   错误被压制，等 recovery
+    │
+    ├─ Step 1: 静默扩容 (8k → 64k)
+    │   条件: 门控 tengu_otk_slot_v1 开启 && 未设置 maxOutputTokensOverride
+    │   操作: 重新发送完全相同请求 (max_tokens: 64000)
+    │   标记: transition = max_output_tokens_escalate
+    │
+    ├─ Step 2: Continuation 消息
+    │   条件: maxOutputTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT (3)
+    │   操作: 注入 "Output token limit hit. Resume directly — no apology..."
+    │   标记: transition = max_output_tokens_recovery
+    │
+    └─ 恢复耗尽: 把 withheld 的错误 yield 给用户</div>
+  <p style="margin:6px 0 0;font-size:0.88em;color:var(--text-dim)">关键代码：<code class="inline">query.ts:1185-1256</code></p>
+</div>
+
+<h3>路径 2：Prompt-too-long 恢复 <span class="badge badge-blue">三层递进</span></h3>
+<p>s11 只有一个 <code class="inline">auto_compact()</code> 做 LLM 摘要。生产版本有三层恢复、逐层尝试：</p>
+
+<div class="card">
+  <h4 style="margin-top:0">层 1：Context Collapse Drain <span class="badge badge-green">最轻量</span></h4>
+  <p>门控 <code class="inline">CONTEXT_COLLAPSE</code>。<code class="inline">contextCollapse.recoverFromOverflow()</code> 从"折叠队列"中弹出已标记为可折叠的上下文组。</p>
+  <ul style="margin:4px 0;padding-left:18px">
+    <li>按组折叠，保留 granular 上下文（不像 summarize 那样损失细节）</li>
+    <li>只执行一次：如果本次循环已经是 <code class="inline">collapse_drain_retry</code>，跳过进入层 2</li>
+    <li>返回 <code class="inline">committed > 0</code> 时继续循环</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">层 2：Reactive Compact <span class="badge badge-purple">中等开销</span></h4>
+  <p>门控 <code class="inline">REACTIVE_COMPACT</code>。在收到 API 的 413/PTL 错误后<strong>被动</strong>触发。</p>
+  <ul style="margin:4px 0;padding-left:18px">
+    <li>解析 <code class="inline">errorDetails</code> 获取 actual/limit 差值 → <code class="inline">getPromptTooLongTokenGap()</code></li>
+    <li>利用差值跳过多个组，不必逐组剥离</li>
+    <li>也会处理 media size 错误（图片/PDF 超限 → <code class="inline">stripImagesFromMessages</code>）</li>
+    <li>设置 <code class="inline">hasAttemptedReactiveCompact = true</code> 防止二次触发</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">层 3：Auto Compact <span class="badge badge-orange">主动预防</span></h4>
+  <p>在每个 query 循环<strong>开始前</strong>主动检查 token 阈值。</p>
+  <ul style="margin:4px 0;padding-left:18px">
+    <li>阈值 = contextWindow - 13000 (AUTOCOMPACT_BUFFER_TOKENS)</li>
+    <li>连续失败 3 次触发断路器（<code class="inline">MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES</code>）</li>
+    <li>预留 20000 tokens 给 summary 输出</li>
+  </ul>
+</div>
+
+<h3>路径 3：API 错误重试 <span class="badge badge-orange">s11 策略 3 增强版</span></h3>
+<p>s11 只是简单的 exponential backoff。生产版本有细粒度错误分类和特定处理。</p>
+
+<div class="card">
+  <h4 style="margin-top:0">withRetry.ts 核心设计</h4>
+  <div class="flow">API 调用
+    │
+    ├─ 429 (rate limit)
+    │   ├─ fast mode active → 检查 retry-after
+    │   │   ├─ &lt; 阈值 → 等待后重试 (fast mode 保留)
+    │   │   └─ ≥ 阈值 → cooldown (切换到标准速度模型)
+    │   └─ 新 API 头部 → 统一限速消息 + overage 检查
+    │
+    ├─ 529 (overloaded)
+    │   ├─ 前台源 (用户等待) → 重试
+    │   ├─ 后台源 → 立即放弃 (避免容量级联)
+    │   └─ Opus 连续 3 次 529 → FallbackTriggeredError (→ Sonnet 降级)
+    │
+    ├─ 401/403 (auth)
+    │   ├─ OAuth token 过期 → handleOAuth401Error → 刷新 → retry
+    │   └─ API key 无效 → CannotRetryError → 用户登录
+    │
+    ├─ ConnectionError
+    │   ├─ Timeout → 分类为 api_timeout
+    │   ├─ ECONNRESET/EPIPE → disableKeepAlive → retry
+    │   └─ SSL 错误 → 分类为 ssl_cert_error
+    │
+    ├─ Max_tokens context overflow
+    │   ├─ 解析实际/限制 token 数
+    │   ├─ 调整 max_tokens = availableContext - 1000 safety buffer
+    │   └─ 确保 ≥ FLOOR_OUTPUT_TOKENS (3000)
+    │
+    └─ 400 (tool_use/tool_result mismatch)
+        ├─ 记录详细日志 (tengu_tool_use_tool_result_mismatch_error)
+        └─ 提示用户 /rewind 恢复</div>
+</div>
+
+<h3>路径 4：阻断 & 预警 <span class="badge badge-red">预防性</span></h3>
+<p>在 API 调用前就阻止无法处理的上下文：</p>
+
+<div class="card">
+  <table>
+    <tr><th>层级</th><th>条件</th><th>行为</th><th>例外</th></tr>
+    <tr><td>预警 (Warning)</td><td>token > warningThreshold</td><td>UI 显示黄色警告</td><td>—</td></tr>
+    <tr><td>错误 (Error)</td><td>token > errorThreshold</td><td>UI 显示红色警告</td><td>—</td></tr>
+    <tr><td>auto-compact 阈值</td><td>token > autoCompactThreshold</td><td>自动触发 LLM compaction</td><td>断路器 3 consecutive failures 后停用</td></tr>
+    <tr><td>硬阻断 (Blocking)</td><td>token > blockingLimit</td><td>返回 <code class="inline">blocking_limit</code> 错误</td><td>跳过条件: 刚 compact 完 / 是 compact 子 Agent / collapse 门控开启</td></tr>
+  </table>
+  <p style="margin:6px 0 0;font-size:0.88em;color:var(--text-dim)">阈值计算：<code class="inline">autoCompactThreshold = contextWindow - 13000</code>；buffer 常量可配置</p>
+</div>
+
+<h3>路径 5：工具执行错误 <span class="badge badge-purple">静默恢复</span></h3>
+<p>工具执行失败<strong>不</strong>中断主循环。每个工具调用的结果是包装在 <code class="inline">tool_result</code> 中的文本消息——LLM 自主决定如何处理：</p>
+
+<div class="card">
+  <div class="call-chain">
+    <div><span class="func">runTools()</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> 每个工具尝试 `handler(...)`</div>
+    <div class="indent-2"><span class="arrow">├─</span> 成功 → 把输出作为 tool_result 返回给 LLM</div>
+    <div class="indent-2"><span class="arrow">└─</span> 失败 → `"Error: {e}"` 作为 tool_result 返回给 LLM</div>
+    <div class="indent-2" style="color:var(--text-dim);font-size:0.9em;">&nbsp;&nbsp;&nbsp;&nbsp;LLM 看到错误后自行决定重试或换方案</div>
+  </div>
+</div>
+
+<p>某些工具的主动恢复：</p>
+<table>
+  <tr><td><code class="inline">BashTool</code></td><td>沙箱超限 → 提示使用 <code class="inline">dangerouslyDisableSandbox:true</code> 重试</td></tr>
+  <tr><td><code class="inline">FileReadTool</code></td><td>文件超限 → 建议用 offset/limit 分段读取</td></tr>
+  <tr><td><code class="inline">AgentTool</code></td><td>子 Agent 错误 → 在 tool_result 中传递错误文本</td></tr>
+</table>
+
+<h2>四、死亡螺旋防护机制</h2>
+
+<p>生产代码中最重要的设计之一：<strong>防止错误恢复本身产生更多错误，导致无限循环</strong>。</p>
+
+<div class="card">
+  <h3 style="margin-top:0">1. Reactive Compact 仅尝试一次</h3>
+  <p><strong>问题：</strong>Layer 2 (LLM summarize) 消耗 token。如果 summarize 后上下文仍然太长，再次触发 PTL → 再次 summarize → 无限消耗。</p>
+  <p><strong>方案：</strong><code class="inline">hasAttemptedReactiveCompact</code> flag。首次触发后设为 true，下次循环不再触发。恢复耗尽后直接 surface 错误。</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">2. Auto Compact 断路器</h3>
+  <p><strong>问题：</strong>auto compact 本身调用 API。如果 compact consistently 失败（每轮都失败），无限重试会浪费大量 API 调用（BQ 显示最多 3,272 次连续失败）。</p>
+  <p><strong>方案：</strong><code class="inline">MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3</code>。连续失败 3 次后停用 auto compact，不再重试。</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">3. Stop Hooks 不在 API 错误后运行</h3>
+  <p><strong>问题：</strong>LLM 从未产生有效回复，stop hooks 评估空消息产生 blocking error → 触发重试 → 触发了相同的 PTL → 无限循环。</p>
+  <p><strong>方案：</strong></p>
+  <ul style="margin:4px 0;padding-left:18px">
+    <li>API 错误消息 → <code class="inline">executeStopFailureHooks()</code> 只记录，不触发 blocking</li>
+    <li>Stop hook blocking 错误迭代中 <code class="inline">hasAttemptedReactiveCompact</code> 不被重置</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">4. 529 后台源不重试</h3>
+  <p><strong>方案：</strong>只有<strong>用户正在等待</strong>的查询源（repl_main_thread, sdk, hook_agent 等）才重试 529。后台源（摘要、标题、建议、分类器）立即放弃——在容量级联中每个重试都是 3-10× 网关放大，而且用户看不到这些失败。</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">5. Death Spiral 感知的 Collapse Drain</h3>
+  <p>collapse drain 只试一次：如果本次已经是 <code class="inline">collapse_drain_retry</code> 状态，跳过 collapse drain，直接跳到 reactive compact。防止"折叠→仍然超长→再折叠→..."。</p>
+</div>
+
+<h2>五、错误分类与用户提示</h2>
+
+<h3>错误分类系统</h3>
+<p><code class="inline">errors.ts:classifyAPIError()</code> 将各种 API 错误映射到标准化的分类标签（用于 Datadog 埋点），而 <code class="inline">getAssistantMessageFromError()</code> 同时生成用户可见的错误消息。</p>
+
+<table>
+  <thead><tr><th>分类标签</th><th>错误条件</th><th>用户消息</th><th>恢复路径</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">prompt_too_long</code></td><td>error.message 包含 "prompt is too long"</td><td>"Prompt is too long"</td><td>③ collapse → reactive compact</td></tr>
+    <tr><td><code class="inline">max_output_tokens</code></td><td>stop_reason === "max_tokens"</td><td>被 withhold，等 recovery</td><td>① 升级/continuation</td></tr>
+    <tr><td><code class="inline">api_timeout</code></td><td>APIConnectionTimeoutError</td><td>"Request timed out"</td><td>② withRetry 重试</td></tr>
+    <tr><td><code class="inline">rate_limit</code></td><td>429, 新/旧头部</td><td>限速消息 + overage 选项</td><td>② withRetry + fast mode cooldown</td></tr>
+    <tr><td><code class="inline">server_overload</code></td><td>529 / overloaded_error</td><td>"Overloaded"</td><td>② 重试 → fallback 模型</td></tr>
+    <tr><td><code class="inline">image_too_large</code></td><td>400 "image exceeds" maximum</td><td>"Image was too large"</td><td>③ reactive compact stripImages</td></tr>
+    <tr><td><code class="inline">pdf_too_large</code></td><td>"maximum of N PDF pages"</td><td>"PDF too large"</td><td>提示用户 pdftotext</td></tr>
+    <tr><td><code class="inline">invalid_api_key</code></td><td>error 包含 "x-api-key"</td><td>"Not logged in / Invalid API key"</td><td>用户手动修复</td></tr>
+    <tr><td><code class="inline">token_revoked</code></td><td>403 "OAuth token revoked"</td><td>"Please run /login"</td><td>用户手动修复</td></tr>
+    <tr><td><code class="inline">tool_use_mismatch</code></td><td>400 "tool_use ids without tool_result"</td><td>"Use /rewind to recover"</td><td>用户手动 /rewind</td></tr>
+    <tr><td><code class="inline">duplicate_tool_use_id</code></td><td>400 "tool_use ids must be unique"</td><td>"Duplicate tool_use ID"</td><td>用户手动 /rewind</td></tr>
+    <tr><td><code class="inline">ssl_cert_error</code></td><td>APIConnectionError SSL</td><td>API 连接错误详情</td><td>网络修复</td></tr>
+    <tr><td><code class="inline">capacity_off_switch</code></td><td>Opus PAYG 容量不足</td><td>"Opus high load, switch model"</td><td>用户 /model 切换</td></tr>
+  </tbody>
+</table>
+
+<h3>错误消息构造原则</h3>
+<div class="card">
+  <ul style="margin:4px 0;padding-left:18px">
+    <li><strong>面向交互式 vs 非交互式：</strong>大多数消息通过 <code class="inline">getIsNonInteractiveSession()</code> 分支，CLI 用户得到 "Double press esc" 提示，SDK/自动化用户得到无交互建议的纯文本</li>
+    <li><strong>敏感信息不泄露：</strong>错误消息不包含 API key、模型 ID、token 数量等敏感信息（但 <code class="inline">errorDetails</code> 给 recovery 路径解析用）</li>
+    <li><strong>可操作：</strong>每个错误提示都包含具体操作（"/login"、"/model"、"/rewind"、"esc esc"、"/compact"）</li>
+  </ul>
+</div>
+
+<h2>六、主动预防 vs 被动恢复</h2>
+
+<div class="card">
+  <h3 style="margin-top:0">生命周期：错误发生的时间线</h3>
+  <div class="lifecycle-bar">
+    <div style="width:25%;background:rgba(63,185,80,0.2);color:var(--green)">主动预防</div>
+    <div style="width:8%;background:rgba(210,153,29,0.2);color:var(--orange)">错误</div>
+    <div style="width:42%;background:rgba(188,140,255,0.2);color:var(--purple)">被动恢复</div>
+    <div style="width:25%;background:rgba(248,81,73,0.2);color:var(--red)">防护网</div>
+  </div>
+</div>
+
+<table>
+  <thead><tr><th>阶段</th><th>机制</th><th>文件</th><th>门控</th></tr></thead>
+  <tbody>
+    <tr><td><strong>主动</strong></td><td>Token 阈值预警</td><td><code class="inline">autoCompact.ts</code></td><td>autoCompactEnabled</td></tr>
+    <tr><td>主动</td><td>Auto Compaction</td><td><code class="inline">autoCompact.ts</code></td><td>autoCompactEnabled</td></tr>
+    <tr><td>主动</td><td>Context Collapse 预折叠</td><td><code class="inline">contextCollapse/</code></td><td>CONTEXT_COLLAPSE</td></tr>
+    <tr><td>主动</td><td>硬阻断限制</td><td><code class="inline">query.ts:637-647</code></td><td>除非 collapse/RC 门控</td></tr>
+    <tr><td>被动</td><td>withRetry 重试</td><td><code class="inline">withRetry.ts</code></td><td>总是启用</td></tr>
+    <tr><td>被动</td><td>max_tokens 恢复</td><td><code class="inline">query.ts:1185-1256</code></td><td>总是启用</td></tr>
+    <tr><td>被动</td><td>Reactive Compact</td><td><code class="inline">reactiveCompact.ts</code></td><td>REACTIVE_COMPACT</td></tr>
+    <tr><td>被动</td><td>Collapse Drain</td><td><code class="inline">contextCollapse/</code></td><td>CONTEXT_COLLAPSE</td></tr>
+    <tr><td>被动</td><td>Fallback 模型切换</td><td><code class="inline">withRetry.ts</code></td><td>fallbackModel 参数</td></tr>
+    <tr><td><strong>防护网</strong></td><td>stop hooks 跳过</td><td><code class="inline">query.ts:1262-1265</code></td><td>总是启用</td></tr>
+    <tr><td>防护网</td><td>RC attempt guard</td><td><code class="inline">State</code> 状态机</td><td>总是启用</td></tr>
+    <tr><td>防护网</td><td>Auto compact 断路器</td><td><code class="inline">autoCompact.ts</code></td><td>总是启用</td></tr>
+  </tbody>
+</table>
+
+<h2>七、Compact 子系统层次</h2>
+
+<p>Claude Code 的 compaction 不是一个单一功能，而是一族相互配合的子系统：</p>
+
+<table>
+  <thead><tr><th>子系统</th><th>触发时机</th><th>开销</th><th>细节保留</th><th>门控</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Micro Compact</strong></td><td>每轮 query 前（轻量）</td><td>低</td><td>高</td><td>MICOCOMPACT</td></tr>
+    <tr><td><strong>API Micro Compact</strong></td><td>API 端缓存编辑</td><td>低</td><td>高</td><td>CACHED_MICROCOMPACT</td></tr>
+    <tr><td><strong>Snip Compact</strong></td><td>HISTORY_SNIP 门控</td><td>中</td><td>中</td><td>HISTORY_SNIP</td></tr>
+    <tr><td><strong>Auto Compact</strong></td><td>token 超过阈值（主动）</td><td>高</td><td>低→中</td><td>autoCompactEnabled</td></tr>
+    <tr><td><strong>Reactive Compact</strong></td><td>API 返回 413/PTL（被动）</td><td>高</td><td>低→中</td><td>REACTIVE_COMPACT</td></tr>
+    <tr><td><strong>Context Collapse</strong></td><td>结构化折叠（主动+被动）</td><td>中</td><td>高</td><td>CONTEXT_COLLAPSE</td></tr>
+    <tr><td><strong>Session Mem Compact</strong></td><td>session memory 替代 compact</td><td>低</td><td>高</td><td>session memory</td></tr>
+  </tbody>
+</table>
+
+<h2>八、代码关键设计模式</h2>
+
+<h3>1. 状态机驱动的恢复</h3>
+<p>主循环用 <code class="inline">State</code> 类型追踪恢复状态：</p>
+<div class="pre">type State = {
+  messages: Message[]
+  autoCompactTracking: AutoCompactTrackingState
+  maxOutputTokensRecoveryCount: number    // max_tokens 连续恢复次数
+  hasAttemptedReactiveCompact: boolean     // 防止 reactive compact 无限循环
+  maxOutputTokensOverride: number          // 8k→64k 升级
+  stopHookActive: boolean                  // 防止 stop hook 循环
+  transition: Continue | undefined         // 恢复原因（用于测试断言）
+}</div>
+
+<h3>2. Withhold + Recovery 分离</h3>
+<p>恢复性错误在流式传输时被"扣留"（withhold），不 yield 给消费者，等到 recovery 尝试后再决定是否显示：</p>
+<div class="flow">API 流式事件
+    │
+    └─ 是恢复性错误？ (PTL / media / max_output_tokens)
+        │
+        ├─ Yes → withhold (不 yield)
+        │         ↓ 加入 assistantMessages
+        │         ↓ 流结束后尝试 recovery
+        │         │
+        │         ├─ recovery 成功 → 不 yield 错误，继续循环
+        │         └─ recovery 耗尽 → yield 错误给用户
+        │
+        └─ No → yield 给 SDK 消费者</div>
+
+<h3>3. 可测试性设计</h3>
+<p><code class="inline">State.transition</code> 字段让测试可以断言哪个恢复路径触发了，而不必检查消息内容：</p>
+<div class="flow">transition: undefined        → 首次循环
+transition: collapse_drain_retry → Context Collapse 触发了
+transition: reactive_compact_retry → Reactive Compact 触发了
+transition: max_output_tokens_escalate → 8k→64k 升级
+transition: max_output_tokens_recovery → Continuation 消息
+transition: stop_hook_blocking      → Stop hook 阻止
+transition: token_budget_continuation → +500k 继续</div>
+
+<h3>4. 门控 Feature Flag</h3>
+<p>高级恢复路径（reactive compact、context collapse、micro compact）通过 <code class="inline">feature()</code> 门控条件导入，非门控构建中对应的代码树摇删除：</p>
+<div class="pre">const reactiveCompact = feature('REACTIVE_COMPACT')
+  ? (require('./services/compact/reactiveCompact.js') as ...)
+  : null</div>
+
+<h2>九、代码引用索引</h2>
+
+<h3>核心循环与恢复状态机</h3>
+<div class="file-ref"><span class="path">src/query.ts</span><span class="role">主查询循环。State 类型定义（164-217）、queryLoop() 恢复状态机（241-1729）、max_output_tokens recovery（1185-1256）、PTL withhold+recovery（1062-1183）、stop hooks 防护（1262-1265）</span></div>
+<div class="file-ref"><span class="path">src/QueryEngine.ts</span><span class="role">流式引擎。stop_reason 追踪（762-858）、API retry 事件 yield（946-949）、retry attempt 传播</span></div>
+
+<h3>API 重试层</h3>
+<div class="file-ref"><span class="path">src/services/api/withRetry.ts</span><span class="role">核心重试引擎。DEFAULT_MAX_RETRIES=10（52）、BASE_DELAY_MS=500（55）、指数退避 + jitter；fast mode cooldown（267-314）；529 Opus fallback（326-364）；max_tokens overflow 调整（384-427）；persistent retry 模式（100-104）；429 overage/reason 处理</span></div>
+<div class="file-ref"><span class="path">src/services/api/errors.ts</span><span class="role">错误分类与用户消息。getAssistantMessageFromError()（425-934）分类 20+ 错误类型；classifyAPIError()（965-1161）埋点标签；parsePromptTooLongTokenCounts()（85-96）PTL token 差值解析；isPromptTooLongMessage()（64-77）；isMediaSizeError()（133-139）；categorizeRetryableAPIError()（1163-1182）</span></div>
+<div class="file-ref"><span class="path">src/services/api/errorUtils.ts</span><span class="role">错误格式化工具。extractConnectionErrorDetails() 提取 SSL/ECONNRESET 详情；formatAPIError()</span></div>
+
+<h3>Compaction 子系统</h3>
+<div class="file-ref"><span class="path">src/services/compact/autoCompact.ts</span><span class="role">主动 compaction。getAutoCompactThreshold()（72-91）；calculateTokenWarningState()（93-140）三级预警；AutoCompactTrackingState（51-60）断路器追踪；MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3（70）</span></div>
+<div class="file-ref"><span class="path">src/services/compact/compact.ts</span><span class="role">LLM 摘要压缩核心。compactConversation() 调用模型做上下文摘要；buildPostCompactMessages() 构建 compact 边界消息</span></div>
+<div class="file-ref"><span class="path">src/services/compact/reactiveCompact.ts</span><span class="role">被动 compaction（413/PTL 后触发）。tryReactiveCompact() 摘要+重试；stripImagesFromMessages() 处理 media size 错误；getPromptTooLongTokenGap() 跳过多个组；isWithheldPromptTooLong() 扣留判断</span></div>
+<div class="file-ref"><span class="path">src/services/compact/microCompact.ts</span><span class="role">轻量级逐轮压缩。microcompactMessages() 在 query 前运行</span></div>
+<div class="file-ref"><span class="path">src/services/compact/apiMicrocompact.ts</span><span class="role">API 端缓存编辑型 micro compact</span></div>
+<div class="file-ref"><span class="path">src/services/compact/sessionMemoryCompact.ts</span><span class="role">session memory 替代传统 compact summary</span></div>
+<div class="file-ref"><span class="path">src/services/compact/prompt.ts</span><span class="role">compaction 使用的 LLM prompt 模板</span></div>
+<div class="file-ref"><span class="path">src/services/compact/postCompactCleanup.ts</span><span class="role">compaction 后的清理工作</span></div>
+<div class="file-ref"><span class="path">src/services/compact/compactWarningHook.ts</span><span class="role">上下文接近极限时的预警 hook</span></div>
+
+<h3>Context Collapse 子系统</h3>
+<div class="file-ref"><span class="path">src/services/contextCollapse/index.ts</span><span class="role">结构化上下文折叠。applyCollapsesIfNeeded() 主动折叠；recoverFromOverflow() 被动恢复；collapse drain 队列管理</span></div>
+
+<h3>工具执行与清理</h3>
+<div class="file-ref"><span class="path">src/query/stopHooks.ts</span><span class="role">handleStopHooks() 后处理 hook；blockingErrors 检测与迭代；死亡螺旋防护</span></div>
+<div class="file-ref"><span class="path">src/services/tools/toolOrchestration.ts</span><span class="role">多工具协调执行。runTools() 并行/串行执行，错误转换为 tool_result 文本</span></div>
+<div class="file-ref"><span class="path">src/services/tools/StreamingToolExecutor.ts</span><span class="role">流式工具执行器。fallback 时 discard() 弃用旧结果；getCompletedResults() 收集结果</span></div>
+
+<h3>配置与工具层</h3>
+<div class="file-ref"><span class="path">src/utils/config.ts</span><span class="role">autoCompactEnabled（234/594/638）配置项</span></div>
+<div class="file-ref"><span class="path">src/utils/analyzeContext.ts</span><span class="role">上下文分析。autoCompactThreshold 检查（1003-1133）；microCompact 集成（856-857）</span></div>
+<div class="file-ref"><span class="path">src/utils/imageResizer.ts</span><span class="role">图片重试/调整。ImageResizeError 预校验异常</span></div>
+<div class="file-ref"><span class="path">src/utils/imageValidation.ts</span><span class="role">图片验证。ImageSizeError 预校验异常</span></div>
+
+<h2>十、对比：s11 教学代码 vs 生产代码</h2>
+
+<table>
+  <thead><tr><th>维度</th><th>s11 (教学)</th><th>Claude Code (生产)</th></tr></thead>
+  <tbody>
+    <tr><td>恢复路径数</td><td>3</td><td>5+（含预防和 collapse）</td></tr>
+    <tr><td>max_tokens 恢复</td><td>最多 3 次 continuation</td><td>静默 8k→64k 升级 + 最多 3 次 continuation</td></tr>
+    <tr><td>PTL 恢复</td><td>auto_compact (LLM summarize)</td><td>collapse drain → reactive compact → auto compact 三层</td></tr>
+    <tr><td>backoff</td><td>base * 2^attempt + jitter</td><td>指数退避 + jitter + retry-after 头部 + fast mode cooldown</td></tr>
+    <tr><td>错误分类</td><td>prompt_too_long / connection 两类</td><td>20+ 分类（含 rate_limit / auth / pdf / image / tool_use...）</td></tr>
+    <tr><td>错误消息</td><td>原始错误文本</td><td>用户友好的可操作消息 + errorDetails 供恢复使用</td></tr>
+    <tr><td>预防机制</td><td>无</td><td>Token 阈值预警 + auto compact + 硬阻断</td></tr>
+    <tr><td>防护网</td><td>无</td><td>RC attempt guard + compact 断路器 + stop hooks 跳过 + 529 后台放弃</td></tr>
+    <tr><td>工具错误</td><td>try/catch 转换为文本</td><td>同左（s11 已经学对了）</td></tr>
+    <tr><td>可测试性</td><td>无</td><td>State.transition 枚举每个恢复路径</td></tr>
+    <tr><td>Feature Flag</td><td>无</td><td>feature() 门控条件导入，树摇删除未启用路径</td></tr>
+    <tr><td>Auth 恢复</td><td>无</td><td>OAuth token 刷新、API key 切换、CCR 模式</td></tr>
+    <tr><td>模型降级</td><td>无</td><td>Opus → Sonnet（529 连续 3 次后）</td></tr>
+    <tr><td>持久重试</td><td>无</td><td>CLAUDE_CODE_UNATTENDED_RETRY 模式（最多 6 小时）</td></tr>
+    <tr><td>重试场景</td><td>无</td><td>流式 fallback 时丢弃并重建执行器</td></tr>
+  </tbody>
+</table>
+
+<h2>十一、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px">设计哲学：<strong>"分层恢复，每层只做一件事。每层有自己的防护网。"</strong></p>
+  <p style="margin:0">教学代码的三路恢复在生产中变成了五路恢复 + token 预警 + 死亡螺旋防护。每个恢复路径都仔细考虑了两个方向——"如何恢复"和"恢复耗尽时如何安全退出"。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">鲁棒性</td><td>✅ 多层恢复保证了极高的自愈能力。collapse drain 最轻量，reactive compact 兜底，auto compact 预防</td></tr>
+    <tr><td>成本控制</td><td>⚠️ LLM-based recovery（auto compact, reactive compact）消耗 API。断路器/Counter 防止失控浪费。BQ 数据显示 3,272 次连续失败用户因此被保护</td></tr>
+    <tr><td>用户体验</td><td>✅ Withhold 机制让用户在 recovery 成功时完全看不到错误。失败时给出可操作的具体提示（/login、/model、/rewind）</td></tr>
+    <tr><td>复杂性</td><td>⚠️ 状态机的 7+ 种 transition、门控条件导入、两个独立子系统（collapse 和 reactive compact）的 withhold/recovery 协调—测试覆盖是关键</td></tr>
+    <tr><td>可测试性</td><td>✅ State.transition 让测试断言 recovery 路径；bun:bundle 的 feature() 门控使单元测试可 mock 路径</td></tr>
+    <tr><td>错误可观察性</td><td>✅ classifyAPIError() 产生标准化标签 → Datadog 监控；tengu_ prefix events 用于 Statsig 链路跟踪</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">从教学代码到生产的演进启示</h4>
+  <ol style="margin:4px 0;padding-left:18px">
+    <li><strong>先预防，后恢复。</strong>最有效的恢复是不需要恢复。s11 没有预防机制，生产代码有完整的 token 阈值预警 + 主动 compact</li>
+    <li><strong>每层恢复要有退路。</strong>s11 的无限重试可能导致浪费。生产代码每层都有 Counter 或 Flag 防止无限循环</li>
+    <li><strong>Feature Flag 管理成熟度。</strong>高级恢复路径以门控条件导入，既支持渐进式发布，又让非门控构建自动排除死代码</li>
+    <li><strong>用户看到的错误要可操作。</strong>s11 朴素地打印错误信息。生产代码为每个错误类型提供具体的用户操作路径</li>
+    <li><strong>测试必须能验证恢复路径。</strong>State.transition 枚举的设计让测试能够断言 "collapse drain 触发了" 而不是检查消息文本</li>
+  </ol>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 对比 s11_error_recovery.py 教学代码 · 2026-06-21
+</p>
+
+</div>
+</body>
+</html>
