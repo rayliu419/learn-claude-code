@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReAct (Reasoning + Acting) 模式在 Claude Code 中的实现</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5faf6; color: #2d3a31; font-size: 13px; line-height: 1.45; padding: 20px; max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.35em; color: #1a4a2e; border-bottom: 2px solid #c3dbcc; padding-bottom: 6px; margin-top: 28px; }
+  h2 { font-size: 1.2em; color: #1f5a38; margin-top: 24px; margin-bottom: 8px; border-left: 4px solid #5cb885; padding-left: 10px; }
+  h3 { font-size: 1.02em; color: #2a6b42; margin-top: 18px; margin-bottom: 6px; }
+  h4 { font-size: 0.95em; color: #357a50; margin: 12px 0 4px; }
+  p { margin: 6px 0; }
+  ul, ol { padding-left: 18px; }
+  li { margin: 2px 0; }
+  code { font-size: 0.88em; background: #e8f5ec; padding: 1px 4px; border-radius: 3px; }
+  pre {
+    font-size: 0.8em;
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 6px;
+    padding: 10px 14px;
+    overflow-x: auto;
+    line-height: 1.5;
+    margin: 6px 0;
+  }
+  table {
+    font-size: 0.9em;
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0;
+  }
+  th { background: #d4eadb; border: 1px solid #c3dbcc; padding: 6px 8px; text-align: left; font-weight: 600; }
+  td { border: 1px solid #c3dbcc; padding: 5px 8px; vertical-align: top; }
+  tr:nth-child(even) { background: #f0f9f3; }
+  .card {
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 10px 0;
+  }
+  .summary { background: #f0f8f2; border: 1px solid #c3dbcc; border-radius: 4px; padding: 6px 10px; margin: 6px 0; font-size: 0.92em; }
+  .flow-arrow { color: #5cb885; font-weight: bold; }
+  .tag { display: inline-block; background: #d4e6dc; border-radius: 3px; padding: 1px 6px; font-size: 0.82em; margin-right: 3px; }
+  .highlight { background: #fce4d6; border-left: 4px solid #e8b89a; padding: 4px 10px; margin: 6px 0; font-size: 0.92em; }
+  blockquote { border-left: 3px solid #c3dbcc; padding: 4px 10px; margin: 6px 0; color: #4a6b55; font-size: 0.92em; }
+  .note { background: #f0f0f0; border-left: 3px solid #888; padding: 4px 8px; margin: 4px 0; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>🔄 ReAct (Reasoning + Acting) 模式在 Claude Code 中的实现</h1>
+
+<p style="margin-bottom:10px;color:#4a6b55;font-size:0.95em;">
+  ReAct 模式不是 React 框架，而是 LLM Agent 的核心设计范式：模型在每个周期中交替进行<strong>推理</strong>（思考当前状态）和<strong>行动</strong>（调用工具），然后观察结果并进入下一轮。这是所有 Coding Agent 的架构基石。
+</p>
+
+<!-- ===================== Summary ===================== -->
+<h2>📋 Summary — 总体架构</h2>
+
+<div class="card">
+<p>Claude Code 的整个执行引擎就是 <strong>ReAct 模式的工业级实现</strong>。核心在 <code>query.ts</code> 的 <code>while(true)</code> 循环中：</p>
+
+<pre>
+每个 while(true) 迭代 = 一个 ReAct 周期
+
+① 准备上下文           →  消息压缩/token 预算
+② 模型推理 (Reason)    →  流式调用 API, 获取 thinking + tool_use
+③ 解析行动 (Parse)     →  分离 thinking / text / tool_use
+④ 执行行动 (Act)       →  分区并行/串行执行工具
+⑤ 反馈观察 (Observe)   →  收集 tool_result, 准备下一轮
+</pre>
+
+<p><strong>核心思想</strong>：这个循环把 LLM 的<strong>推理能力</strong>和<strong>工具执行能力</strong>连接成一个闭环。Claude Code 没有喊 "ReAct" 这个词，但每一行代码都是这个模式的产物。</p>
+</div>
+
+<!-- ===================== Details ===================== -->
+<h2>🔍 Details — 各环节详解</h2>
+
+<h3>1. 推理 (Reasoning) 的实现</h3>
+
+<p>Claude Code 通过 Anthropic Messages API 的 <code>thinking</code> 参数启用推理层：</p>
+
+<ul>
+  <li><strong>adaptive thinking</strong>（Claude 4+ 模型）：自动分配推理预算，模型自行决定思考多深</li>
+  <li><strong>budget thinking</strong>（旧模型）：固定 token 预算（如 16000 tokens）</li>
+  <li>流式解析 <code>thinking_delta</code> 事件，构建独立的 <code>contentBlock.thinking</code></li>
+  <li>每个 thinking block 附带加密签名（<code>signature_delta</code>），用于完整性验证</li>
+</ul>
+
+<div class="note"><strong>关键文件</strong>：<code>src/services/api/claude.ts</code> (line ~1596-1630 配置, line ~2148-2161 流式解析)</div>
+
+<h3>2. 行动 (Acting) 的实现</h3>
+
+<p>模型输出中的 <code>tool_use</code> content block 触发行动执行：</p>
+
+<pre>
+// query.ts ~line 829
+const msgToolUseBlocks = message.message.content.filter(
+  content => content.type === 'tool_use',
+)
+if (msgToolUseBlocks.length > 0) {
+  needsFollowUp = true  // 有工具要执行，继续循环
+}
+</pre>
+
+<p><strong>关键机制</strong>：</p>
+
+<table>
+  <tr><th>机制</th><th>文件</th><th>说明</th></tr>
+  <tr><td>分区执行</td><td><code>toolOrchestration.ts</code></td><td>并发安全工具并行，非安全工具串行</td></tr>
+  <tr><td>流式提前执行</td><td><code>StreamingToolExecutor.ts</code></td><td>边流式边执行工具，不等模型输出完</td></tr>
+  <tr><td>权限管道</td><td><code>toolExecution.ts</code></td><td>每次工具调用经过 permission → pre-hook → call → post-hook</td></tr>
+</table>
+
+<h3>3. 观察 (Observation) 的实现</h3>
+
+<p>工具执行完成后，结果以 <code>tool_result</code> 消息形式注入下一轮迭代：</p>
+
+<ul>
+  <li>StreamingToolExecutor 收集已完成工具的结果</li>
+  <li>同时注入附件消息（文件变更通知、后台任务完成、memory 召回等）</li>
+  <li>构建新的 <code>state</code> 对象：<code>{ messages: [...旧消息, ...assistant, ...toolResults] }</code></li>
+  <li><code>state = next</code> → 回到 <code>while(true)</code> 顶部</li>
+</ul>
+
+<h3>4. 循环决策 (Continue vs Terminate)</h3>
+
+<p>每次迭代结束时判断是否需要继续：</p>
+
+<div style="display:flex;gap:12px;margin:8px 0;">
+<div style="flex:1;background:#e8f5ec;border:1px solid #c3dbcc;border-radius:6px;padding:8px 12px;">
+<strong style="color:#2d8f5e;">✅ 继续</strong>
+<ul style="margin-top:4px;">
+<li><code>next_turn</code> — 常规 ReAct 继续</li>
+<li><code>reactive_compact_retry</code> — token 超限后压缩重试</li>
+<li><code>max_output_tokens_recovery</code> — 输出截断后恢复</li>
+</ul>
+</div>
+<div style="flex:1;background:#fce4d6;border:1px solid #e8b89a;border-radius:6px;padding:8px 12px;">
+<strong style="color:#c04000;">⏹ 终止</strong>
+<ul style="margin-top:4px;">
+<li><code>completed</code> — 正常完成</li>
+<li><code>max_turns</code> — 达到最大轮次</li>
+<li><code>stop_hook_prevented</code> — 钩子阻止</li>
+<li><code>model_error</code> — 模型出错</li>
+</ul>
+</div>
+</div>
+
+<h3>5. 上下文管理（支撑 ReAct 持续运行）</h3>
+
+<p>ReAct 循环能持续数十个周期，依赖精密的上下文管理机制：</p>
+
+<table>
+  <tr><th>机制</th><th>作用</th></tr>
+  <tr><td><strong>Autocompact</strong></td><td>对话太长时自动摘要旧内容，压缩到预算内</td></tr>
+  <tr><td><strong>Microcompact</strong></td><td>细粒度压缩单个 <code>tool_result</code>，只保留关键信息</td></tr>
+  <tr><td><strong>Snip</strong></td><td>大输出截断到预算以内</td></tr>
+  <tr><td><strong>Token budget 跟踪</strong></td><td>每次迭代前检查剩余预算，防止超限</td></tr>
+</table>
+
+<!-- ===================== Conclusion ===================== -->
+<h2>💡 Conclusion — 设计原则与学习建议</h2>
+
+<div class="card">
+<h3>ReAct 模式在 Coding Agent 中的关键设计原则</h3>
+
+<ol>
+  <li><strong>循环即架构</strong> — Agent 的本质就是一个 <code>while(true)</code> 循环，没有循环就没有 agent</li>
+  <li><strong>推理与行动分离</strong> — <code>thinking</code> block 代表内部推理，<code>tool_use</code> 代表外部行动，两者在消息数组中自然分离</li>
+  <li><strong>观察驱动迭代</strong> — <code>tool_result</code> 不是终点而是下一轮推理的输入，形成闭环</li>
+  <li><strong>提前执行优化</strong> — StreamingToolExecutor 在模型还在输出时就启动工具，减少 idle 时间</li>
+  <li><strong>终止判断清晰</strong> — 每次迭代都检查是否需要继续，避免无限循环</li>
+</ol>
+</div>
+
+<h3>学习路径建议</h3>
+
+<ol>
+  <li>先读 <code>agents/s01_agent_loop.py</code> — 理解最简 ReAct 循环（~50 行）</li>
+  <li>再对照 <code>claude-code/src/query.ts</code> — 看生产代码如何扩展</li>
+  <li>关注三个增量：前处理(compact/snip)、后处理(error handling)、并行化(StreamingToolExecutor)</li>
+</ol>
+
+<div class="note">
+<strong>关联笔记</strong>：教学代码 <code>agents/s01_agent_loop.py</code> → <code>s19_*.py</code> 渐进构建；生产代码 <code>query.ts</code> → 完整的 ReAct 引擎
+</div>
+
+</body>
+</html>
