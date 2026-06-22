@@ -231,7 +231,7 @@ def run_subagent(prompt: str) -> str:
 <div class="chapter">
 <h3 id="s05">s05 — Skill Loading <span class="tag">按需知识</span></h3>
 <div class="summary"><strong>核心思想：</strong>两层技能模型 — 轻量目录放在 system prompt 里，完整技能体按需加载。
-<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../claude-code/notes/tool-system-study.html" style="color:#2d8a4e;">Tool 系统设计分析 (Skill 部分)</a> — Skill 作为内置核心工具注册（SkillTool + ToolSearch 延迟加载）</div></div>
+<div style="margin-top:3px;"><span class="tag" style="background:#d6e9f8;border:1px solid #8ac4e0;">CC 实现参考</span> <a href="../../claude-code/notes/skill-system-analysis.html" style="color:#2d8a4e;">Skill 系统设计分析</a> — Skill 注册、发现、延迟加载全流程，以及 ToolSearch 集成</div></div>
 <table>
   <tr><th>文件</th><td><code>s05_skill_loading.py</code></td></tr>
   <tr><th>关键类</th><td><span class="code">SkillRegistry</span> 扫描 <code>skills/</code> 目录下的 SKILL.md</td></tr>
