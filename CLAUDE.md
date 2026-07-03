@@ -82,9 +82,9 @@ This is a **teaching repository** for building a coding-agent harness. The struc
 
 The production Claude Code source lives at `/Users/liurui/workspace/claude-code` — this learning repo teaches the design backbone, not a 1:1 mirror. Cross-reference the two when studying implementation details.
 
-## Three Independent Projects
+## Four Independent Projects
 
-This repository contains **three separate projects** under the same root. They are independent and should not be confused:
+This repository contains **four separate projects** under the same root. They are independent and should not be confused:
 
 ### `agents/` — Learning-by-Doing Agent Implementation
 - A teaching demo that shows how to implement a simple agent loop **from scratch**.
@@ -96,6 +96,13 @@ This repository contains **three separate projects** under the same root. They a
 - Implements agent architecture based on the patterns described in `readings/agentic_design_pattern_cn.pdf`.
 - A different codebase from `agents/` — not an extension of the chapter files.
 - Focus: apply established agent design patterns (tool use, planning, multi-agent collaboration) from the ground up.
+
+### `pi/` — Minimal Terminal Coding Harness
+- Pi is a minimal terminal coding agent harness installed locally (`/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/`).
+- Adaptable via TypeScript extensions, skills, prompt templates, and themes — no forking needed.
+- Runs in four modes: interactive, print/JSON, RPC for process integration, and an SDK for embedding.
+- Supports subagents, chain/parallel execution, and intercom coordination for multi-session workflows.
+- Focus: study this as a **production-quality, extensible coding agent harness** to compare with the teaching demos in `agents/` and the production-level code in `claude-code/`.
 
 ### `claude-code/` — Production-Grade Coding Agent
 - The actual source code of Claude Code (`/Users/liurui/workspace/claude-code`).
