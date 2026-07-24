@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Permission 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+  .badge-gray{background:#e0e5e2;color:#5a6b60}
+
+  ul,ol { margin:4px 0 4px 18px; }
+  li { margin:2px 0; }
+
+  .summary-box { background:#e8f5ec; border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin:10px 0; }
+  .highlight-box { background:#fef9e6; border:1px solid #e8dca5; border-radius:4px; padding:8px 12px; margin:6px 0; }
+  .highlight-box strong { color:var(--orange); }
+
+  /* Call-chain styles (同 startup-flow.html) */
+  .flow-card { background:#e8f5ec; border:1px solid #c3dbcc; border-radius:8px; padding:12px 16px; margin:8px 0; }
+  .flow-card h3 { margin:0 0 6px 0; font-size:0.95em; color:#1a3325; }
+  .call-chain {
+    font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.78em;
+    line-height:1.65;
+    padding:6px 0;
+  }
+  .call-chain .func { color:#0a6e3a; font-weight:600; }
+  .call-chain .file { color:#6b7a71; font-size:0.9em; }
+  .call-chain .arrow { color:#8aa89a; }
+  .call-chain .comment { color:#6b7a71; font-style:italic; }
+  .call-chain .branch-desc { color:#3a6a4a; }
+  .call-chain .hl { color:#0a6e3a; font-weight:600; }
+  .call-chain .tag { display:inline-block; border-radius:3px; padding:0 5px; font-size:0.9em; }
+  .call-chain .tag-allow { background:#d4edda; color:#1a6e30; }
+  .call-chain .tag-deny { background:#fde2e2; color:#c0392b; }
+  .call-chain .tag-ask { background:#fdf0d5; color:#b8860b; }
+  .call-chain .tag-auto { background:#d6e9f8; color:#2d8a4e; }
+  .indent-1 { padding-left:20px; }
+  .indent-2 { padding-left:40px; }
+  .indent-3 { padding-left:60px; }
+  .indent-4 { padding-left:80px; }
+  .indent-5 { padding-left:100px; }
+  .indent-6 { padding-left:120px; }
+  .dot { color:#6b8a7a; margin-right:4px; }
+
+  .section-nav { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .section-nav a { text-decoration:none; color:var(--accent); font-size:0.85em; padding:3px 8px; border:1px solid var(--border); border-radius:4px; }
+  .section-nav a:hover { background:var(--surface); }
+</style>
+</head>
+<body>
+
+<div class="hero">
+<h1>Claude Code Permission 系统设计分析</h1>
+<div class="sub">工具权限检查、用户交互审批、自动模式分类器的完整架构</div>
+<div class="meta">
+  <span>📁 src/utils/permissions/</span>
+  <span>📁 src/hooks/toolPermission/</span>
+  <span>📁 src/components/permissions/</span>
+  <span>📁 src/commands/permissions/</span>
+  <span>📁 src/types/permissions.ts</span>
+</div>
+</div>
+
+<div class="container">
+
+<!-- ============================================================ -->
+<!-- SUMMARY -->
+<!-- ============================================================ -->
+<div class="summary-box">
+<h2>一、系统概览</h2>
+<p>
+Permission 系统是 Claude Code 的安全护栏，负责在 Agent 每次调用工具前进行权限检查。
+它通过<strong>多层次决策流水线</strong>（规则匹配 → 模式判断 → 工具自身检查 → 交互审批 / AI 分类器 → Hook 拦截），
+决定每个工具调用是 <code class="inline">allow</code>、<code class="inline">deny</code> 还是 <code class="inline">ask</code>（需要用户确认）。
+</p>
+<p>
+系统核心设计原则：<strong>防御性安全</strong>——默认拒绝所有未明确授权的高危操作；
+<strong>渐进式授权</strong>——用户可在交互中临时或永久授予权限；
+<strong>安全模式自动判断</strong>——Auto 模式下使用 AI 分类器替代用户做实时决策。
+</p>
+</div>
+
+<div class="section-nav">
+<a href="#init">1. 初始化流程</a>
+<a href="#modes">2. 权限模式</a>
+<a href="#rules">3. 权限规则</a>
+<a href="#pipeline">4. 决策流水线</a>
+<a href="#interactive">5. 交互审批</a>
+<a href="#auto">6. Auto 模式</a>
+<a href="#updates">7. 更新与持久化</a>
+<a href="#hooks">8. Hook 集成</a>
+<a href="#explainer">9. 权限解释器</a>
+<a href="#log">10. 审计日志</a>
+</div>
+
+<!-- ============================================================ -->
+<!-- 1. Initialization -->
+<!-- ============================================================ -->
+<h2 id="init">一、初始化流程</h2>
+
+<p>
+权限系统在 Claude Code 启动时由 <code class="inline">permissionSetup.ts</code> 中的 <code class="inline">initializeToolPermissionContext()</code> 初始化。
+启动入口在 <code class="inline">src/bootstrap/</code> 的启动序列中调用。
+</p>
+
+<div class="card">
+<h3>初始化函数签名</h3>
+<pre><code>async function initializeToolPermissionContext({
+  allowedToolsCli,      // --allowed-tools CLI 参数
+  disallowedToolsCli,   // --disallowed-tools CLI 参数
+  baseToolsCli,         // --base-tools CLI 参数
+  permissionMode,       // 来自 CLI --permission-mode 或 settings.defaultMode
+  allowDangerouslySkipPermissions,
+  addDirs,              // --add-dir 参数
+}): Promise&lt;{
+  toolPermissionContext,
+  warnings,
+  dangerousPermissions,
+  overlyBroadBashPermissions,
+}&gt;</code></pre>
+</div>
+
+<h3>初始化步骤</h3>
+<ol>
+  <li><strong>解析 CLI 参数</strong>：<code class="inline">parseToolListFromCLI()</code> 解析逗号/空格分隔的工具列表，<code class="inline">normalizeLegacyToolName()</code> 将旧名称（如 <code class="inline">Task</code> → <code class="inline">Agent</code>）映射到规范名称。</li>
+  <li><strong>检测 base tools</strong>：如果指定了 <code class="inline">--base-tools</code>，自动 deny 所有不在基础集中的工具。</li>
+  <li><strong>加载磁盘规则</strong>：<code class="inline">loadAllPermissionRulesFromDisk()</code> 从所有启用的 settings 源加载权限规则。</li>
+  <li><strong>检测不安全规则</strong>：Auto 模式下扫描 <code class="inline">findDangerousClassifierPermissions()</code>，阻止会绕过分类器的过宽权限（如 <code class="inline">Bash(*)</code>）。</li>
+  <li><strong>检测过宽的 Shell 规则</strong>：Ant 内部环境下检测 <code class="inline">Bash(*)</code> 和 <code class="inline">PowerShell(*)</code>。</li>
+  <li><strong>创建上下文</strong>：<code class="inline">applyPermissionRulesToPermissionContext()</code> 将规则合并进 <code class="inline">ToolPermissionContext</code>。</li>
+  <li><strong>添加额外工作目录</strong>：验证并添加 settings 和 CLI 指定的附加目录权限。</li>
+  <li><strong>异步验证自动模式</strong>：<code class="inline">verifyAutoModeGateAccess()</code> 通过 GrowthBook 动态配置检查 auto mode 是否可用，含断路器（circuit breaker）和模型兼容性检查。</li>
+</ol>
+
+<div class="flow-card">
+<h3>Permission 系统初始化调用链</h3>
+<div class="call-chain">
+  <div><span class="func">initializeToolPermissionContext()</span> <span class="file">[src/utils/permissions/permissionSetup.ts]</span></div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="func">parseToolListFromCLI</span> 解析 allowed/disallowed/base tools</div>
+  <div class="indent-2"><span class="dot">•</span> <span class="func">normalizeLegacyToolName</span> 旧名映射 (Task→Agent, KillShell→TaskStop)</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> 检测 baseTools 集 → 自动 deny 非基础工具</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="func">loadAllPermissionRulesFromDisk()</span> <span class="file">[permissionsLoader.ts]</span></div>
+  <div class="indent-2"><span class="arrow">└─</span> 从所有 enabled setting sources 加载规则</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="func">findDangerousClassifierPermissions()</span> <span class="comment">— auto 模式扫描</span></div>
+  <div class="indent-2"><span class="dot">•</span> Bash(*) / Bash(python:*) 等危险规则</div>
+  <div class="indent-2"><span class="dot">•</span> Agent(*) 绕过子代理审查</div>
+  <div class="indent-2"><span class="dot">•</span> PowerShell(iex:*) / PowerShell(Start-Process:*)</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="func">applyPermissionRulesToPermissionContext()</span></div>
+  <div class="indent-2"><span class="arrow">└─</span> 合并磁盘规则 + CLI args → ToolPermissionContext</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> 验证并添加 additional directories</div>
+
+  <div class="indent-1"><span class="arrow">└─</span> <span class="func">verifyAutoModeGateAccess()</span> <span class="comment">— 异步 GrowthBook 门控</span></div>
+  <div class="indent-2"><span class="dot">•</span> 断路器 (circuit breaker) 检查</div>
+  <div class="indent-2"><span class="dot">•</span> 模型兼容性检查</div>
+  <div class="indent-2"><span class="dot">•</span> 自动踢出 auto 模式 (若断路器合闸)</div>
+</div>
+<div style="margin-top:8px; font-size:0.85em; color:var(--text-dim);">
+<strong>初始模式优先级</strong>：
+<span class="tag tag-allow">--dangerously-skip-permissions</span> →
+<span class="tag tag-auto">--permission-mode auto (gate check)</span> →
+<span class="tag tag-ask">settings.defaultMode</span> →
+<span class="tag tag-allow">default</span>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 2. Permission Modes -->
+<!-- ============================================================ -->
+<h2 id="modes">二、权限模式（Permission Modes）</h2>
+
+<p>
+权限模式定义了权限检查的整体策略。共 6 种模式：
+</p>
+
+<table>
+<thead>
+<tr><th>模式</th><th>外部名称</th><th>含义</th><th>行为</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><span class="badge badge-blue">default</span></td>
+  <td><code>default</code></td>
+  <td>默认模式</td>
+  <td>任意未配置的规则都会触发 <code>ask</code>，弹出对话框</td>
+</tr>
+<tr>
+  <td><span class="badge badge-blue">acceptEdits</span></td>
+  <td><code>acceptEdits</code></td>
+  <td>接受编辑</td>
+  <td>自动允许除了高风险操作外的所有工具调用</td>
+</tr>
+<tr>
+  <td><span class="badge badge-purple">plan</span></td>
+  <td><code>plan</code></td>
+  <td>规划模式</td>
+  <td>只允许只读操作，写入操作需要明确审批。进入时保存 prePlanMode</td>
+</tr>
+<tr>
+  <td><span class="badge badge-red">bypassPermissions</span></td>
+  <td><code>bypassPermissions</code></td>
+  <td>全部绕过</td>
+  <td>跳过所有权限检查（高危）。可通过 Statsig 和 settings 禁用</td>
+</tr>
+<tr>
+  <td><span class="badge badge-red">dontAsk</span></td>
+  <td><code>dontAsk</code></td>
+  <td>不询问</td>
+  <td>所有 <code>ask</code> 都被转换为 <code>deny</code>，自动拒绝</td>
+</tr>
+<tr>
+  <td><span class="badge badge-orange">auto</span></td>
+  <td><code>default</code>（外部映射）</td>
+  <td>自动模式</td>
+  <td>AI 分类器替代用户做决策，Ant-only，需 GrowthBook 门控</td>
+</tr>
+</tbody>
+</table>
+
+<div class="highlight-box">
+<strong>关键设计</strong>：模式之间通过 <code class="inline">transitionPermissionMode()</code> 管理状态转移，自动处理 plan 模式的进出、auto 模式的激活/去激活、危险规则的剥离/恢复。
+</div>
+
+<!-- ============================================================ -->
+<!-- 3. Permission Rules -->
+<!-- ============================================================ -->
+<h2 id="rules">三、权限规则系统</h2>
+
+<h3>3.1 规则来源（PermissionRuleSource）</h3>
+<table>
+<thead><tr><th>来源</th><th>说明</th><th>持久化</th></tr></thead>
+<tbody>
+<tr><td><code>userSettings</code></td><td>用户全局设置 (~/.claude/settings.json)</td><td>磁盘</td></tr>
+<tr><td><code>projectSettings</code></td><td>项目设置 (.claude/settings.json)</td><td>磁盘</td></tr>
+<tr><td><code>localSettings</code></td><td>本地设置（gitignored）</td><td>磁盘</td></tr>
+<tr><td><code>flagSettings</code></td><td>功能标记（只读）</td><td>只读</td></tr>
+<tr><td><code>policySettings</code></td><td>企业策略（只读）</td><td>只读</td></tr>
+<tr><td><code>cliArg</code></td><td>CLI 参数（如 --allowed-tools）</td><td>会话</td></tr>
+<tr><td><code>session</code></td><td>当前会话内存</td><td>会话</td></tr>
+<tr><td><code>command</code></td><td>命令注入（如 /permissions）</td><td>只读</td></tr>
+</tbody>
+</table>
+
+<h3>3.2 规则行为（PermissionBehavior）</h3>
+<ul>
+  <li><span class="badge badge-green">allow</span> — 允许该工具调用</li>
+  <li><span class="badge badge-red">deny</span> — 拒绝该工具调用</li>
+  <li><span class="badge badge-orange">ask</span> — 强制弹框询问用户</li>
+</ul>
+
+<h3>3.3 规则匹配</h3>
+<p>
+规则值格式为 <code class="inline">ToolName</code>（全局匹配）或 <code class="inline">ToolName(content)</code>（内容级匹配）：
+</p>
+<pre><code>// 工具级匹配
+Bash                    → 匹配整个 Bash 工具
+Bash(*)                 → 同上，显式通配符
+
+// 内容级匹配
+Bash(npm install)       → 只匹配 npm install 命令
+Bash(npm *)             → 匹配所有 npm 开头的命令
+
+// MCP 工具匹配
+mcp__server1            → 匹配 server1 的所有工具
+mcp__server1__*         → 同上，显式通配符
+
+// Agent 类型匹配
+Agent(Explore)          → 只匹配 Explore 子代理</code></pre>
+
+<h3>3.4 资源权限</h3>
+<p>
+除工具权限外，系统还管理<strong>工作目录权限</strong>和<strong>路径安全</strong>（<code class="inline">pathValidation.ts</code>）。
+<code class="inline">additionalWorkingDirectories</code> 映射维护了额外授权的工作目录列表。
+关键路径（如 <code class="inline">.git/</code>、<code class="inline">.claude/</code>、<code class="inline">.vscode/</code>、shell 配置文件）有专门的 <code class="inline">safetyCheck</code> 保护，即使 bypass 模式也无法绕过。
+</p>
+
+<!-- ============================================================ -->
+<!-- 4. Decision Pipeline -->
+<!-- ============================================================ -->
+<h2 id="pipeline">四、权限决策流水线</h2>
+
+<p>
+核心决策函数位于 <code class="inline">permissions.ts:hasPermissionsToUseTool()</code> → <code class="inline">hasPermissionsToUseToolInner()</code>。
+这是一个<strong>严格有序的判定级联</strong>：
+</p>
+
+<div class="flow-card">
+<h3>权限决策流水线 <span class="file">hasPermissionsToUseToolInner()</span></h3>
+<div class="call-chain">
+  <div><span class="hl">Step 1a</span> 整工具 deny 规则存在？ <span class="tag tag-deny">→ deny</span></div>
+  <div><span class="hl">Step 1b</span> 整工具 ask 规则存在？ <span class="tag tag-ask">→ ask</span> <span class="comment">(sandbox 可豁免)</span></div>
+  <div><span class="hl">Step 1c</span> 工具自身 <span class="func">checkPermissions()</span> <span class="comment">→ 委托给工具</span></div>
+  <div><span class="hl">Step 1d</span> 工具 deny 了？ <span class="tag tag-deny">→ deny</span></div>
+  <div><span class="hl">Step 1e</span> 工具需要用户交互？ <span class="tag tag-ask">→ ask</span></div>
+  <div><span class="hl">Step 1f</span> 内容级 ask 规则？ <span class="tag tag-ask">→ ask</span> <span class="comment">(bypass 免疫)</span></div>
+  <div><span class="hl">Step 1g</span> 安全路径检查？ <span class="tag tag-ask">→ ask</span> <span class="comment">(bypass 免疫)</span></div>
+
+  <div style="margin:4px 0; color:#6b8a75; font-size:0.9em;">──────────────────────────── 以上对 bypass 模式也生效 ────────────────────────────</div>
+
+  <div><span class="hl">Step 2a</span> bypass 模式？ <span class="tag tag-allow">→ allow</span></div>
+  <div><span class="hl">Step 2b</span> 整工具 allow 规则？ <span class="tag tag-allow">→ allow</span></div>
+  <div><span class="hl">Step 3</span> passthrough 转 ask <span class="tag tag-ask">→ ask</span></div>
+
+  <div style="margin:4px 0; color:#6b8a75; font-size:0.9em;">──────────────────────────── hasPermissionsToUseTool() 外层 ────────────────────────────</div>
+
+  <div>若 <span class="tag tag-ask">ask</span> 且 <span class="tag tag-deny">dontAsk</span> 模式 <span class="tag tag-deny">→ deny</span></div>
+  <div>若 <span class="tag tag-ask">ask</span> 且 <span class="tag tag-auto">auto</span> 模式 <span class="comment">→ 运行 YOLO 分类器</span></div>
+  <div>若 <span class="tag tag-ask">ask</span> 且 <span class="tag tag-auto">headless</span> <span class="comment">→ PermissionRequest hook → auto-deny</span></div>
+</div>
+
+<h3>工具自身检查（checkPermissions）</h3>
+<p>
+每个工具可以覆盖 <code class="inline">checkPermissions(input, context)</code> 方法，实现工具特定的细粒度检查。
+例如 Bash 工具会：
+</p>
+<ul>
+  <li>检查命令前缀是否匹配 allow/deny/ask 规则</li>
+  <li>检测危险模式（管道到 shell、输出重定向等）</li>
+  <li>返回 <code class="inline">subcommandResults</code> 说明每个子命令的判定</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- 5. Interactive Permission -->
+<!-- ============================================================ -->
+<h2 id="interactive">五、交互审批流程</h2>
+
+<p>
+当流水线返回 <code class="inline">ask</code> 时，<code class="inline">useCanUseTool.tsx</code> Hook 负责协调最终的用户交互。
+这是整个权限系统的核心入口点，它提供了 React Hook 形式的权限检查能力。
+</p>
+
+<h3>5.1 总体协调（useCanUseTool）</h3>
+<div class="flow-card">
+<h3>useCanUseTool Hook — 权限协调入口</h3>
+<div class="call-chain">
+  <div><span class="func">useCanUseTool()</span> <span class="file">[src/hooks/useCanUseTool.tsx]</span></div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="func">createPermissionContext()</span></div>
+  <div class="indent-2"><span class="arrow">└─</span> 创建 ctx 对象 (handleUserAllow / buildAllow / cancelAndAbort / runHooks / tryClassifier ...)</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="func">hasPermissionsToUseTool()</span> <span class="arrow">→</span> 执行 7 步判定流水线</div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="tag tag-allow">[allow]</span> <span class="func">logDecision</span> + <span class="func">resolve(buildAllow)</span></div>
+
+  <div class="indent-1"><span class="arrow">├─</span> <span class="tag tag-deny">[deny]</span> <span class="func">logDecision</span> + <span class="func">recordAutoModeDenial</span> + <span class="func">resolve(deny)</span></div>
+
+  <div class="indent-1"><span class="arrow">└─</span> <span class="tag tag-ask">[ask]</span> 分流到三种 handler：</div>
+
+  <div class="indent-2"><span class="arrow">├─</span> <span class="hl">Coordinator Worker</span> <span class="arrow">→</span> <span class="func">handleCoordinatorPermission()</span></div>
+  <div class="indent-3"><span class="arrow">├─</span> 顺序等待 hooks → classifier</div>
+  <div class="indent-3"><span class="arrow">└─</span> 未解决 → 回退到交互对话框</div>
+
+  <div class="indent-2"><span class="arrow">├─</span> <span class="hl">Swarm Worker</span> <span class="arrow">→</span> <span class="func">handleSwarmWorkerPermission()</span></div>
+  <div class="indent-3"><span class="arrow">├─</span> 尝试 classifier 自动批准</div>
+  <div class="indent-3"><span class="arrow">├─</span> mailbox 转发给 leader</div>
+  <div class="indent-3"><span class="arrow">└─</span> 注册回调等待 leader 响应</div>
+
+  <div class="indent-2"><span class="arrow">└─</span> <span class="hl">Main Agent</span> <span class="arrow">→</span> <span class="func">handleInteractivePermission()</span></div>
+  <div class="indent-3"><span class="arrow">├─</span> 推入 ToolUseConfirm 队列 (React state)</div>
+  <div class="indent-3"><span class="arrow">├─</span> 后台: PermissionRequest hooks</div>
+  <div class="indent-3"><span class="arrow">├─</span> 后台: Bash 分类器 (异步竞速)</div>
+  <div class="indent-3"><span class="arrow">├─</span> 2s 宽限期: 投机分类器 (speculative)</div>
+  <div class="indent-3"><span class="arrow">└─</span> 显示对话框, 多路竞速等待</div>
+  <div class="indent-4"><span class="dot">•</span> 本地 Terminal 对话框</div>
+  <div class="indent-4"><span class="dot">•</span> CCR Bridge (claude.ai)</div>
+  <div class="indent-4"><span class="dot">•</span> Channel (Telegram / iMessage)</div>
+  <div class="indent-4"><span class="dot">•</span> Hook 自动决策</div>
+  <div class="indent-4"><span class="dot">•</span> Classifier 自动批准</div>
+</div>
+</div>
+
+<h3>5.2 交互式处理（handleInteractivePermission）</h3>
+<p>
+<code class="inline">interactiveHandler.ts</code> 实现了主 Agent 的交互审批流程，使用<strong>多路竞速（race）</strong>模式：
+</p>
+<ul>
+  <li><strong>本地用户</strong>：通过 ToolUseConfirm 队列在 Ink 终端渲染对话框</li>
+  <li><strong>Bridge（CCR）</strong>：通过 replBridgePermissionCallbacks 发送到 claude.ai</li>
+  <li><strong>Channel</strong>：通过 MCP send_message 发送到 Telegram/iMessage 等</li>
+  <li><strong>Hooks</strong>：PermissionRequest hooks 异步运行</li>
+  <li><strong>Bash 分类器</strong>：异步检查，自动批准后显示 3s ✓ 标记</li>
+</ul>
+<p>
+使用 <code class="inline">createResolveOnce</code> 确保<strong>仅胜出一方</strong>能解决问题，防止重复授权。
+用户操作有 200ms 宽限期防止误触取消分类器。
+</p>
+
+<h3>5.3 Coordinator Handler</h3>
+<p>
+对于 coordinator worker（后台 Agent），所有自动化检查（hooks + classifier）在显示对话框前<strong>顺序等待</strong>。
+这确保后台 Agent 在不打断用户的情况下尽可能自行解决权限问题。
+</p>
+
+<h3>5.4 Swarm Worker Handler</h3>
+<p>
+对于 swarm worker，权限请求通过<strong>mailbox 通信机制</strong>转发给 leader 节点。
+leader 的 allow/reject 决定通过回调发回 worker。同时显示"等待 leader 审批"的视觉指示。
+</p>
+
+<!-- ============================================================ -->
+<!-- 6. Auto Mode -->
+<!-- ============================================================ -->
+<h2 id="auto">六、Auto 模式与 AI 分类器</h2>
+
+<p>
+Auto 模式（Ant-only）是权限系统的<strong>最高级特性</strong>。它使用 AI 分类器替代人工审批每个工具调用。
+</p>
+
+<h3>6.1 架构</h3>
+<p>
+位于 <code class="inline">src/utils/permissions/yoloClassifier.ts</code>（主分类器）和 <code class="inline">bashClassifier.ts</code>（Bash 专用）。
+分类器使用 Claude API 的 sideQuery 运行，对当前上下文和工具参数进行分析。
+2 阶段架构：快速阶段 + 思考阶段。
+</p>
+
+<h3>6.2 安全护栏</h3>
+<ul>
+  <li><strong>危险规则剥离</strong>：<code class="inline">stripDangerousPermissionsForAutoMode()</code> 在进入 auto 模式时自动移除过宽的 allow 规则（如 <code class="inline">Bash(*)</code>、<code class="inline">Agent(*)</code>）。</li>
+  <li><strong>安全工具白名单</strong>：某些低风险工具跳过分类器直接 allow。</li>
+  <li><strong>acceptEdits 快路径</strong>：先检查命令在 acceptEdits 模式下是否会被允许，如果是则跳过昂贵的分类器调用。</li>
+  <li><strong>PowerShell 特例</strong>：默认情况下 PowerShell 在 auto 模式中需要明确用户权限。</li>
+  <li><strong>连续拒绝限制</strong>：3 次连续拒绝或 20 次总拒绝后回退到人工审批。</li>
+  <li><strong>断电器（Circuit Breaker）</strong>：GrowthBook 动态配置可全局禁用 auto 模式。</li>
+  <li><strong>safetyCheck 豁免</strong>：非分类器可审批的安全检查（如跨机器消息）免疫 auto 自动批准。</li>
+  <li><strong>fail-closed/fail-open</strong>：分类器不可用时，取决于 GrowthBook 配置。</li>
+</ul>
+
+<h3>6.3 模式转换</h3>
+<pre><code>transitionPermissionMode(fromMode, toMode):
+  1. from plan → not-plan: setHasExitedPlanMode(true)
+  2. 进入 auto:
+     - 设置 autoModeActive = true
+     - stripDangerousPermissionsForAutoMode()
+  3. 离开 auto (或从 auto 进入 plan):
+     - 设置 autoModeActive = false
+     - restoreDangerousPermissions() 恢复危险规则
+     - setNeedsAutoModeExitAttachment(true)
+  4. plan 模式中切换 auto 的激活/去激活:
+     - transitionPlanAutoMode() 根据 shouldPlanUseAutoMode 判断</code></pre>
+
+<!-- ============================================================ -->
+<!-- 7. Updates & Persistence -->
+<!-- ============================================================ -->
+<h2 id="updates">七、权限更新与持久化</h2>
+
+<h3>7.1 PermissionUpdate 类型</h3>
+<p>
+所有权限变更都通过统一的 <code class="inline">PermissionUpdate</code> 数据结构表达：
+</p>
+<ul>
+  <li><code class="inline">addRules</code> — 添加规则</li>
+  <li><code class="inline">replaceRules</code> — 替换规则</li>
+  <li><code class="inline">removeRules</code> — 删除规则</li>
+  <li><code class="inline">setMode</code> — 设置模式</li>
+  <li><code class="inline">addDirectories</code> / <code class="inline">removeDirectories</code> — 管理目录权限</li>
+</ul>
+
+<h3>7.2 执行与持久化</h3>
+<p>
+<code class="inline">applyPermissionUpdate()</code> 修改内存中的 <code class="inline">ToolPermissionContext</code>。
+<code class="inline">persistPermissionUpdate()</code> 将可持久化的更新写入 settings JSON 文件。
+<code class="inline">PermissionUpdateSchema.ts</code> 使用 Zod 确保更新格式正确性。
+</p>
+
+<!-- ============================================================ -->
+<!-- 8. Hooks -->
+<!-- ============================================================ -->
+<h2 id="hooks">八、Hook 集成</h2>
+
+<p>
+权限系统通过 <code class="inline">PermissionRequest</code> hook 类型与 Claude Code 的 Hook 系统集成。
+每个工具调用前会触发 <code class="inline">executePermissionRequestHooks()</code>，
+Hook 可以返回 <code class="inline">allow</code>（带可选 input 修改和规则更新）、<code class="inline">deny</code>（带可选 interrupt）或继续。
+</p>
+
+<p>
+Hook 在两种场景下运行：
+</p>
+<ul>
+  <li><strong>Headless Agent</strong>：在 <code class="inline">permissions.ts</code> 的 <code class="inline">runPermissionRequestHooksForHeadlessAgent()</code> 中，在 auto-deny 前给 Hook 一次机会。</li>
+  <li><strong>交互式 Agent</strong>：在 <code class="inline">interactiveHandler.ts</code> 中，对话框显示后异步并行执行。</li>
+  <li><strong>Coordinator Worker</strong>：在 <code class="inline">coordinatorHandler.ts</code> 中，顺序等待。</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- 9. Explainer -->
+<!-- ============================================================ -->
+<h2 id="explainer">九、权限解释器</h2>
+
+<p>
+<code class="inline">permissionExplainer.ts</code> 使用 Claude API（Haiku 模型）为每个权限请求生成人类可读的解释，
+展示在对话框中帮助用户理解"什么命令"、"为什么执行"、"有什么风险"。
+</p>
+<p>
+使用 <code class="inline">sideQuery()</code> 带强制 tool_choice 的结构化输出，返回包含 riskLevel（LOW/MEDIUM/HIGH）、
+explanation（命令说明）、reasoning（执行动机）、risk（风险描述）的结构化数据。
+可通过 <code class="inline">permissionExplainerEnabled</code> 配置关闭。
+</p>
+
+<!-- ============================================================ -->
+<!-- 10. Audit Log -->
+<!-- ============================================================ -->
+<h2 id="log">十、审计日志与遥测</h2>
+
+<p>
+所有权限决定通过 <code class="inline">permissionLogging.ts</code> 集中记录：
+</p>
+<ul>
+  <li><strong>Analytics 事件</strong>：Statsig 事件 <code class="inline">tengu_tool_use_granted_*</code> 和 <code class="inline">tengu_tool_use_rejected_*</code></li>
+  <li><strong>OTel 遥测</strong>：<code class="inline">tool_decision</code> OTel 事件</li>
+  <li><strong>代码编辑计数器</strong>：对 Edit/Write/NotebookEdit 工具的决策单独追踪，按语言分类</li>
+  <li><strong>上下文记录</strong>：<code class="inline">toolUseContext.toolDecisions</code> Map 保存每个 tool_use 的决策历史</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- 11. Core Types -->
+<!-- ============================================================ -->
+<h2 id="types">十一、核心数据结构</h2>
+
+<pre><code>// ToolPermissionContext - 权限上下文的"事实来源"
+type ToolPermissionContext = {
+  mode: PermissionMode                    // 当前权限模式
+  additionalWorkingDirectories: Map       // 额外工作目录
+  alwaysAllowRules: ToolPermissionRulesBySource  // allow 规则（按来源分组）
+  alwaysDenyRules: ToolPermissionRulesBySource   // deny 规则
+  alwaysAskRules: ToolPermissionRulesBySource    // ask 规则
+  isBypassPermissionsModeAvailable: boolean
+  strippedDangerousRules?: ToolPermissionRulesBySource  // auto 模式剥离的危险规则
+  shouldAvoidPermissionPrompts?: boolean   // headless 标记
+  isAutoModeAvailable?: boolean
+  prePlanMode?: PermissionMode            // 进入 plan 前的模式
+}
+
+// PermissionDecision - 最终权限决策
+type PermissionDecision =
+  | { behavior: 'allow'; updatedInput?; decisionReason? }
+  | { behavior: 'ask'; message; suggestions?; blockedPath? }
+  | { behavior: 'deny'; message; decisionReason }
+
+// PermissionDecisionReason - 决策原因（审计关键）
+type PermissionDecisionReason =
+  | { type: 'rule'; rule: PermissionRule }
+  | { type: 'mode'; mode: PermissionMode }
+  | { type: 'subcommandResults'; reasons: Map }
+  | { type: 'hook'; hookName; reason? }
+  | { type: 'classifier'; classifier; reason }
+  | { type: 'safetyCheck'; reason; classifierApprovable }
+  | { type: 'sandboxOverride'; reason }
+  | { type: 'workingDir'; reason }
+  | { type: 'asyncAgent'; reason }
+  | { type: 'other'; reason }</code></pre>
+
+<!-- ============================================================ -->
+<!-- CONCLUSION -->
+<!-- ============================================================ -->
+<h2 id="conclusion">十二、总结</h2>
+
+<p>
+Claude Code 的权限系统是一个<strong>多层次、可扩展的安全架构</strong>，核心设计目标是在"不打断用户"和"确保安全"之间取得平衡：
+</p>
+
+<ul>
+  <li><strong>规则系统</strong>提供灵活的工具级和内容级权限配置，支持从个人 setting 到企业策略的多个规则来源。</li>
+  <li><strong>模式系统</strong>让用户一键切换安全姿态，从完全信任（bypass）到完全保护（dontAsk），再到 AI 辅助的 auto 模式。</li>
+  <li><strong>决策流水线</strong>确保每个工具调用经过严格的判定级联，不存在安全缺口。</li>
+  <li><strong>交互模型</strong>通过多路竞速（本地 Terminal + CCR Bridge + Channel + Hook + Classifier）让审批尽可能快速流畅。</li>
+  <li><strong>Auto 模式</strong>代表了最先进的安全自动化：用 AI 分类器替代人工审批，同时保有多层安全护栏避免误放行。</li>
+  <li><strong>审计日志</strong>确保每个决策都可追溯、可分析。</li>
+</ul>
+
+</div>
+
+</body>
+</html>

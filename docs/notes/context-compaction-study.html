@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Context Compaction 机制解析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+  .callout-danger { border-left-color:var(--red); background:#fde2e2; }
+
+  ul, ol { padding-left:20px; margin:4px 0; }
+  li { margin:2px 0; }
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  .toc { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 18px; margin-bottom:16px; }
+  .toc ol { margin:4px 0 0; }
+  .toc a { color:var(--accent); text-decoration:none; }
+
+  .call-chain {
+    font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.8em;
+    line-height:1.65;
+    padding:10px 0;
+  }
+  .call-chain .func { color:#0a6e3a; font-weight:600; }
+  .call-chain .file { color:#6b7a71; font-size:0.9em; }
+  .call-chain .arrow { color:#8aa89a; }
+  .call-chain .comment { color:#6b7a71; font-style:italic; }
+  .indent-1 { padding-left:20px; }
+  .indent-2 { padding-left:40px; }
+  .indent-3 { padding-left:60px; }
+  .indent-4 { padding-left:80px; }
+  .indent-5 { padding-left:100px; }
+  .dot { color:#6b8a7a; margin-right:4px; }
+  .call-chain .num { color:#b8860b; font-weight:600; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Context Compaction 机制解析</h1>
+  <p class="sub">LLM 上下文窗口是硬约束 —— 如何让一个会话无限持续</p>
+</header>
+
+<div class="container">
+
+<h2 style="margin-top:0;font-size:1.35em;">Compaction 调用图</h2>
+
+<div class="card">
+  <h3>触发入口（3 条路径）</h3>
+  <div class="call-chain">
+    <div><span class="arrow">┌─</span> <span class="func">queryLoop()</span> <span class="file">[src/query.ts]</span> <span class="comment">— 每次 API 调用前自动触发（主路径）</span></div>
+    <div><span class="arrow">├─</span> <span class="func">/compact 命令</span> <span class="file">[commands.ts]</span> <span class="comment">— 用户手动触发（partialCompactConversation）</span></div>
+    <div><span class="arrow">└─</span> API 413 错误 <span class="file">[src/query.ts ~1067]</span> <span class="comment">— 反应式压缩（Reactive Compact）</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>每轮 API 调用前的检查链条（queryLoop 内有序执行）</h3>
+  <div class="call-chain">
+    <div><span class="func">queryLoop()</span> <span class="comment">— while(true) 每轮迭代</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="num">①</span> <span class="func">getMessagesAfterCompactBoundary()</span> <span class="file">[utils/messages.ts]</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> 从最后一次 <span class="func">CompactBoundaryMessage</span> 之后切片 <span class="comment">— 跳过已压缩历史</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="num">②</span> <span class="func">applyToolResultBudget()</span> <span class="comment">— 截断超大工具结果</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="num">③</span> <span class="func">snipCompactIfNeeded()</span> <span class="tag">[feature:HISTORY_SNIP]</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> 过滤低价值消息：空结果 / 被拒工具 / 已压缩历史</div>
+    <div class="indent-2"><span class="arrow">└─</span> 返回 <span class="func">snipTokensFreed</span> <span class="comment">— 传递给 autocompact 调整阈值</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="num">④</span> <span class="func">microcompactMessages()</span> <span class="file">[microCompact.ts]</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> 时间触发路径 <span class="comment">— 距上条 assistant &gt;60min → 清除旧 tool_result 内容</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> 缓存编辑路径 <span class="comment">— cache 仍热 → 注册 pendingCacheEdits</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="num">⑤</span> Context Collapse <span class="tag">[feature:CONTEXT_COLLAPSE]</span> <span class="comment">— 与 autocompact 互斥</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">applyCollapsesIfNeeded()</span> <span class="comment">— 投影式折叠，~90% 阈值提交</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="num">⑥</span> <span class="func">autoCompactIfNeeded()</span> <span class="file">[autoCompact.ts]</span> <span class="comment">— 最核心的压缩决策入口</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">shouldAutoCompact()</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 计算 token 用量 vs <span class="func">getAutoCompactThreshold()</span> <span class="comment">— 默认 ~93%</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> guard 检查：CONTEXT_COLLAPSE? DISABLE_AUTO_COMPACT? session_memory 来源?</div>
+    <div class="indent-3"><span class="arrow">└─</span> 未超阈值 → <span class="func">跳过压缩，继续 API 调用</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> 电路断路器 <span class="comment">— max 3 次连续失败 → 停止重试</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">trySessionMemoryCompaction()</span> <span class="file">[sessionMemoryCompact.ts]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 使用后台提取的会话笔记 <span class="comment">— 零 LLM 调用</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">calculateMessagesToKeepIndex()</span> <span class="comment">— 规则驱动（token 阈值 + 配对保护）</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">adjustIndexToPreserveAPIInvariants()</span> <span class="comment">— 保护 tool_use↔tool_result 配对</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 成功? → <span class="func">跳过 full compact</span> / 失败? → 继续</div>
+
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">compactConversation()</span> <span class="file">[compact.ts]</span> <span class="comment">— LLM 驱动完整压缩（fallback）</span></div>
+
+    <div class="indent-3"><span class="arrow">├─</span> 预处理</div>
+    <div class="indent-4"><span class="arrow">├─</span> <span class="func">stripImagesFromMessages()</span> <span class="comment">— 图片 → [image] 标记</span></div>
+    <div class="indent-4"><span class="arrow">└─</span> <span class="func">stripReinjectedAttachments()</span> <span class="comment">— 去掉压缩后重建的附件</span></div>
+
+    <div class="indent-3"><span class="arrow">├─</span> Forked Agent + Cache Sharing <span class="comment">— 子进程共享主对话 prompt cache</span></div>
+    <div class="indent-4"><span class="arrow">└─</span> LLM 生成 9 维度总结 → 剥离 <span class="func">&lt;analysis&gt;</span> 草稿，保留 <span class="func">&lt;summary&gt;</span></div>
+
+    <div class="indent-3"><span class="arrow">├─</span> PTL 重试 <span class="comment">— 按 API round 分组丢弃最旧组，最多 3 次</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">runPostCompactCleanup()</span> <span class="file">[postCompactCleanup.ts]</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> 重置 microcompact 注册表</div>
+    <div class="indent-4"><span class="arrow">├─</span> 重置 context collapse / memory cache / system prompt</div>
+    <div class="indent-4"><span class="arrow">└─</span> 清除 classifier approvals / beta tracing</div>
+
+    <div class="indent-2" style="margin-top:6px;"><span class="arrow">└─</span> <span class="func">buildPostCompactMessages()</span> <span class="comment">— 组装压缩后消息</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> ① CompactBoundaryMarker <span class="comment">— 标记边界</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> ② summary messages <span class="comment">— 摘要内容</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> ③ messagesToKeep <span class="comment">— 保留的最新消息</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> ④ 附件重建 <span class="comment">— 文件/skill/plan/agent 状态</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> ⑤ Hook 结果注入</div>
+
+    <div class="indent-1" style="margin-top:6px;"><span class="arrow">├─</span> <span class="num">⑦</span> 阻止极限检查 <span class="comment">— effectiveWindow - 3K</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">callModel()</span> <span class="comment">— 发送 API 请求</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> 413 错误? → 反应式压缩</div>
+    <div class="indent-2"><span class="arrow">├─</span> Context Collapse Drain <span class="comment">— 排空折叠队列</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">tryReactiveCompact()</span> <span class="comment">— 更紧凑的摘要</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> stripImages 重试 <span class="comment">— 若图片太大</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> 全部失败 → 显示 "Prompt is too long" <span class="comment">— 不触发 stop hooks</span></div>
+  </div>
+</div>
+
+<div class="card" style="background:#fff;border:1px solid var(--border);">
+  <h4 style="margin:0;font-size:0.9em;">文件索引</h4>
+  <table style="margin:4px 0 0;font-size:0.85em;">
+    <tr><th>文件</th><th>职责</th></tr>
+    <tr><td><code>src/query.ts</code></td><td>查询循环 — 编排⑦步前置检查 → callModel</td></tr>
+    <tr><td><code>src/services/compact/autoCompact.ts</code></td><td>自动压缩决策 — 阈值检测 + 断路器 + 编排</td></tr>
+    <tr><td><code>src/services/compact/compact.ts</code></td><td>核心压缩引擎 — 主压缩 + 部分压缩 + 后处理</td></tr>
+    <tr><td><code>src/services/compact/microCompact.ts</code></td><td>微压缩 — 时间触发 / 缓存编辑两条路径</td></tr>
+    <tr><td><code>src/services/compact/sessionMemoryCompact.ts</code></td><td>会话笔记压缩 — 零 LLM 调用</td></tr>
+    <tr><td><code>src/services/compact/grouping.ts</code></td><td>API round 分组 — 用于 PTL 重试</td></tr>
+    <tr><td><code>src/services/compact/prompt.ts</code></td><td>压缩 prompt 模板 + 摘要格式化</td></tr>
+    <tr><td><code>src/services/compact/postCompactCleanup.ts</code></td><td>压缩后清理 — 七项状态重置</td></tr>
+    <tr><td><code>src/utils/messages.ts</code></td><td>CompactBoundaryMessage 工具函数</td></tr>
+    <tr><td><code>src/utils/context.ts</code></td><td>上下文窗口大小计算</td></tr>
+  </table>
+</div>
+
+<nav class="toc">
+  <p style="margin:0 0 2px;font-weight:600">目录</p>
+  <ol>
+    <li><a href="#summary">Summary —— 设计哲学与核心直觉</a></li>
+    <li><a href="#landscape">全局景观：五大战场</a></li>
+    <li><a href="#snip">Snip —— 直接删除，不总结</a></li>
+    <li><a href="#detour">绕路：如何避免触发压缩</a></li>
+    <li><a href="#prune">裁剪：规则驱动的丢弃</a></li>
+    <li><a href="#session-memory">复用：零 LLM 调用的会话笔记</a></li>
+    <li><a href="#full-compact">总结：LLM 驱动的浓缩</a></li>
+    <li><a href="#413">兜底：当所有防线都失效</a></li>
+    <li><a href="#circuit-breaker">自我保护：电路断路器</a></li>
+    <li><a href="#conclusion">Conclusion —— 几条关键设计原则</a></li>
+  </ol>
+</nav>
+
+<!-- ========================================================== -->
+<h2 id="summary">一、Summary —— 设计哲学与核心直觉</h2>
+
+<p>Context compaction 解决的是一个简单但残酷的问题：<strong>LLM 的上下文窗口是物理上限</strong>。模型只能"看到"有限的信息。用户希望一个会话可以无限持续，但 token 预算就是那么多。压缩机制就是在这两个矛盾之间做缓冲。</p>
+
+<p>核心直觉：<strong>不要总用最贵的手段</strong>。</p>
+
+<p>想象整理一个堆满文件的桌面。你不会每次觉得乱就把所有文件扔进碎纸机（LLM 总结），而是：</p>
+<ul>
+  <li>先把明显没用的草稿纸扔掉（规则驱动裁剪）</li>
+  <li>把还在用的文件叠整齐（缓存编辑）</li>
+  <li>看一眼自己的笔记本来回忆上周做了什么（会话记忆复用）</li>
+  <li>最后，以上都不够，才把旧文件归档成一份摘要（LLM 压缩）</li>
+</ul>
+
+<p>这就是 Compaction 系统的架构哲学：<strong>层层递进，轻量优先，让后续层可能不需要触发</strong>。每一层都是一个独立的安全网，成本递增但能力也递增。上层失败了，下层兜住。</p>
+
+<p>另外一个关键直觉：<strong>不要等出事了再解决</strong>。系统在每次 API 调用前都做一次 token 用量检查，在接近阈值之前就主动行动。这不是事后补救，而是预防性维护。</p>
+
+<!-- ========================================================== -->
+<h2 id="landscape">二、全局景观：五大战场</h2>
+
+<p>Context Compaction 不是在单一层面解决问题。系统在五个不同的战场上同时作战，每个战场有自己的武器和策略：</p>
+
+<table>
+  <thead>
+    <tr><th>战场</th><th>策略</th><th>代价</th><th>谁执行</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>删除</strong></td>
+      <td>不总结，直接扔掉不需要的历史</td>
+      <td>零（数组操作）</td>
+      <td>Snip</td>
+    </tr>
+    <tr>
+      <td><strong>绕路</strong></td>
+      <td>通过轻量操作避免触发压缩</td>
+      <td>几乎为零</td>
+      <td>Tool Budget、Microcompact、Context Collapse</td>
+    </tr>
+    <tr>
+      <td><strong>裁剪</strong></td>
+      <td>用规则驱动丢弃旧工具结果</td>
+      <td>零 LLM 调用</td>
+      <td>Tool Result Budget（截断超大结果）、Time-based Microcompact（清除旧工具结果）、Cached Microcompact（缓存编辑）</td>
+    </tr>
+    <tr>
+      <td><strong>复用</strong></td>
+      <td>使用已有的会话笔记代替摘要</td>
+      <td>零 LLM 调用但依赖后台任务</td>
+      <td>Session Memory Compact</td>
+    </tr>
+    <tr>
+      <td><strong>总结</strong></td>
+      <td>让 LLM 生成摘要浓缩历史</td>
+      <td>一次 LLM API 调用（~200K tokens）</td>
+      <td>Full Compact (Forked Agent + Cache Sharing)</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>这个分层的核心价值：<strong>大多数情况下，最贵的路径（Full Compact）根本不需要执行</strong>。前四层（删除 + 绕路 + 裁剪 + 复用）覆盖了绝大多数场景，只有它们都搞不定时才走到 LLM 总结。</p>
+
+<p>如果所有预防措施都失败，API 返回了 413（prompt too long）错误，系统还有最后一层反应式压缩作为兜底。</p>
+
+<div class="flow">每次 API 调用前的检查链条：
+
+  ① getMessagesAfterCompactBoundary — 从最后一次压缩边界开始切片
+  ② Snip           → 过滤/删除已标记为 snipped 的消息
+  ③ Tool Budget    → 截断超大工具结果
+  ④ Microcompact   → 清除旧工具结果（时间触发或缓存编辑）
+  ⑤ Context Collapse → 投影式折叠（可选，与 autocompact 互斥）
+  ⑥ Autocompact    → 阈值触发，尝试压缩
+      ├─ Session Memory Compact（零 LLM 调用，优先）
+      └─ Full Compact（Forked Agent + LLM 总结）
+  ⑦ API 调用 → 如果返回 413
+      ├─ Context Collapse Drain
+      └─ Reactive Compact（反应式压缩）</div>
+
+<!-- ========================================================== -->
+<h2 id="snip">三、Snip —— 直接删除，不总结</h2>
+
+<p>Snip 是压缩链条中<strong>成本最低的第一层</strong>：不调用 LLM、不生成摘要、不产生任何 API 费用。它就是纯数组操作——在每次 API 调用前，把模型不需要看到的低价值整轮对话从消息数组中直接过滤掉。</p>
+
+<p>滤掉三类低价值消息：</p>
+<ul>
+  <li><strong>空结果</strong> —— 比如 grep 没找到匹配、Read 一个不存在的文件、Glob 返回空列表</li>
+  <li><strong>被用户拒绝的工具调用</strong> —— 模型提议运行了某个操作，用户点了拒绝</li>
+  <li><strong>已被之前压缩覆盖的旧轮次</strong> —— 已经总结过的对话，不需要再保留原始消息</li>
+</ul>
+
+<p>系统还提供了一个 <strong>SnipTool</strong>，让模型可以在对话中主动要求删除特定消息。每条 user 消息末尾被自动附加了 <code>[id:abc123]</code> 短 ID 标签，模型可以引用这些 ID 来请求删除。</p>
+
+<p>因为 Snip 是每个 API 调用前最先跑的步骤，如果它释放的 token 足够多，让总用量降到阈值以下，后面的所有步骤（Microcompact、AutoCompact 等更昂贵的操作）就根本不需要执行。</p>
+
+<!-- ========================================================== -->
+<h2 id="detour">四、绕路：如何避免触发压缩</h2>
+
+<p>最好的压缩是不压缩。系统有多个轻量机制在 autocompact 决策之前运行，如果它们释放的 token 足够让用量降到阈值以下，autocompact 就不会触发。这就像"先扫地再看要不要大扫除"。</p>
+
+<h3>Tool Result Budget —— 截断超大结果</h3>
+<p>如果某个工具返回了特别大的结果（例如读取一个巨型文件），将其内容替换为截断版本。只修内容，不碰缓存结构。在 microcompact 之前运行。</p>
+
+<h3>Microcompact —— 两条互斥路径</h3>
+<p><strong>时间触发路径：</strong>如果距离上一条 assistant 消息超过 60 分钟，说明服务器侧的 prompt cache 已经过期了——无论内容是否修改，下次请求都会重写整个 prefix。那就提前把旧工具结果的内容清除，替换为 <code>[Old tool result content cleared]</code>，这样重写时体积更小。只保留最近 5 个工具的结果，其余全部清除。</p>
+
+<p><strong>缓存编辑路径：</strong>利用 Anthropic API 的 <code>cache_edits</code> 功能，在不破坏 prompt cache 的前提下删除旧的工具结果。这是更精细的操作——不修改本地消息内容，而是生成一批 cache_edits 块附加到下一次 API 请求中。通过维护模块级的注册状态来追踪哪些工具结果可以被安全删除。</p>
+
+<div class="callout callout-tip">
+  <p style="margin:0"><strong>两条路径的关系：</strong>时间触发和缓存编辑是互斥的。时间触发意味着 cache 已经冷了，用传统的 cache_edits 没有意义。缓存编辑路径只在 cache 还是热的（即用户持续活跃）时才跑。</p>
+</div>
+
+<h3>Context Collapse —— 投影式折叠（替代方案）</h3>
+<p>这是一个与 autocompact 互斥的实验性功能。当启用时，系统使用"投影"而不是"压缩"来管理上下文。折叠操作不修改 REPL 的完整历史，而是在读取时投影出折叠后的视图。~90% token 用量时开始提交折叠，~95% 时阻塞等待折叠完成。</p>
+
+<p>为什么与 autocompact 互斥？Autocompact 在 ~93% 触发，恰好在 collapse 的提交阈值（90%）和阻塞阈值（95%）之间。两者同时启用，autocompact 会在 collapse 来得及保存细粒度上下文之前用一个大摘要覆盖所有内容。</p>
+
+<!-- ========================================================== -->
+<h2 id="prune">五、裁剪：规则驱动的丢弃</h2>
+
+<p>当需要压缩时，首先要决定的是"丢弃什么"。这个决策本质上是<strong>规则驱动的</strong>，而不是交给 LLM 判断。LLM 只负责"如何浓缩"，不负责"丢弃哪些"。这是非常重要的设计选择：规则是可预测、可测试、零成本的；LLM 的决策则不可预测且昂贵。</p>
+
+<p>规则的核心是几个简单的约束：</p>
+<ul>
+  <li><strong>最少保留 10K tokens</strong>：压缩后不能把上下文压得太干</li>
+  <li><strong>最多保留 40K tokens</strong>：压缩后也不能留得太多</li>
+  <li><strong>最少保留 5 条文本消息</strong>：保证有足够的人类对话上下文</li>
+  <li><strong>工具配对完整性</strong>：不能拆散 tool_use 和 tool_result 的配对</li>
+  <li><strong>共享 message.id 的保护</strong>：流式产生的分片消息（thinking block + tool_use）要一起保留</li>
+  <li><strong>压缩边界（compact boundary）是地板</strong>：不会向前跨越之前的压缩边界，防止磁盘不连续性</li>
+</ul>
+
+<p>规则从 <code>lastSummarizedMessageId</code> 之后开始计算，向后扩展直到满足所有约束。这个算法没有 API 调用，纯粹是数组操作和 token 估算。</p>
+
+<div class="callout">
+  <p style="margin:0"><strong>工具配对修复案例：</strong>有一个索引 N+1 的 assistant 消息包含 tool_use: ORPHAN_ID，而 N+3 的 user 消息包含 tool_result: ORPHAN_ID。如果压缩从 N+2 开始截断，ORPHAN_ID 的 tool_result 就没有对应的 tool_use 了，API 会报错。调整算法会识别到这个情况，自动把起始索引回退到 N+1。</p>
+</div>
+
+<p>压缩后还有一套<strong>附件重建</strong>规则：</p>
+<ul>
+  <li>最多恢复 5 个最近读取的文件，总预算 50K tokens，单文件上限 5K</li>
+  <li>最近调用的 skills 重新注入，单 skill 上限 5K，总预算 25K</li>
+  <li>Plan 文件、后台 agent 状态等也会被重新注入</li>
+</ul>
+
+<!-- ========================================================== -->
+<h2 id="session-memory">六、复用：零 LLM 调用的会话笔记</h2>
+
+<p>这是系统中最优雅的优化。Claude Code 有一个后台任务在持续提取<strong>会话笔记</strong>（session memory）——不断从历史对话中提取关键信息。当需要压缩时，优先使用这些已经提取好的笔记来构建摘要，而不是调用 LLM 去重新阅读整个对话。</p>
+
+<p><strong>为什么不需要调用 LLM？</strong> 因为摘要内容已经在 session memory 里了。系统只需要做三件事：</p>
+<ol>
+  <li>找到最后被摘要的消息 ID（lastSummarizedMessageId）</li>
+  <li>用规则算法（上面说的 token 阈值 + 配对保护）决定保留哪些最新消息</li>
+  <li>把 session memory 内容 + 保留的最新消息拼接成一个有效的消息数组</li>
+</ol>
+
+<p>整个过程零 LLM 调用。只有当 session memory 为空（新会话或后台任务还没完成提取），或者压缩后的内容仍然超过阈值时，才回退到昂贵的 Full Compact。</p>
+
+<div class="callout callout-tip">
+  <p style="margin:0"><strong>两种场景：</strong>正常对话有 lastSummarizedMessageId，只保留该 ID 之后的消息。Resumed session（恢复的会话）没有 lastSummarizedMessageId，但有 session memory 内容——保留所有消息，但使用 session memory 作为摘要来源，相当于对已有内容做了"标记来源"而不是"重新提取"。</p>
+</div>
+
+<!-- ========================================================== -->
+<h2 id="full-compact">七、总结：LLM 驱动的浓缩</h2>
+
+<p>当 Session Memory Compact 不可用或不足以让 token 用量降到阈值以下时，系统调用 Full Compact。这是最昂贵但最彻底的路径。</p>
+
+<h3>Forked Agent + Cache Sharing</h3>
+<p>Full Compact 使用一个 <strong>forked agent</strong>（子进程）来调用 LLM 生成摘要。这个子进程<strong>共享主对话的 prompt cache</strong>——相同的 system prompt、tools 和 messages prefix。这意味着 compact API 调用的 cache 命中率高达 ~98%。如果没有 cache sharing，每次 compact 将产生 ~200K token 的 cache creation 成本。</p>
+
+<h3>预处理</h3>
+<p>在发送给 LLM 总结之前，消息数组经过两道预处理：</p>
+<ul>
+  <li><strong>stripImagesFromMessages</strong>：图片和文档替换为 <code>[image]</code> / <code>[document]</code> 文本标记。防止图片撑爆 compact API 自身的 token 窗口</li>
+  <li><strong>stripReinjectedAttachments</strong>：去掉压缩后会重新注入的 skill_discovery / skill_listing 等附件类型</li>
+</ul>
+
+<h3>九维度总结</h3>
+<p>LLM 被要求按 9 个维度总结对话：用户意图、技术概念、文件与代码、错误与修复、问题解决进展、所有用户消息（非工具结果）、待处理任务、当前工作状态、可选的下一步。模型先输出 <code>&lt;analysis&gt;</code> 草稿块再输出 <code>&lt;summary&gt;</code>，系统剥离 analysis 块只保留 summary 放入后续上下文——analysis 是给模型的"草稿纸"，自身不占用上下文。</p>
+
+<h3>PTL 重试</h3>
+<p>如果 compact API 调用本身也 Prompt Too Long（要总结的消息太多），系统按 API round 分组消息，从最老的一组开始丢弃，最多重试 3 次。如果无法解析 token 缺口（某些 Vertex/Bedrock 错误格式），退而丢弃 20% 的组。</p>
+
+<h3>摘要的自我意识</h3>
+<p>压缩后注入的 summary 消息包含精确的自我认知指令：</p>
+<ul>
+  <li>"This session is being continued from a previous conversation that ran out of context."</li>
+  <li>Transcript 文件路径（模型需要时可以读取完整历史）</li>
+  <li>Autocompact 模式："Resume directly — do not acknowledge the summary"</li>
+  <li>Proactive mode 特殊提示：这不是第一次 wake-up</li>
+</ul>
+
+<!-- ========================================================== -->
+<h2 id="413">八、兜底：当所有防线都失效</h2>
+
+<p>当所有前置压缩都未能阻止 API 返回 413（prompt too long）错误时，系统进入<strong>反应式压缩</strong>（Reactive Compact）流程：</p>
+
+<ol>
+  <li><strong>错误暂扣</strong>：413 错误在 streaming loop 中被 withhold，不立即显示给用户</li>
+  <li><strong>Context Collapse Drain</strong>：如果 Context Collapse 启用，排空所有 staged 折叠队列</li>
+  <li><strong>生成紧凑摘要</strong>：调用 LLM 生成更紧凑的摘要并丢弃超出部分</li>
+  <li><strong>媒体错误处理</strong>：如果原因是图片/PDF 太大，通过 stripImages 后重试</li>
+  <li><strong>全部失败</strong>：才向用户显示 "Prompt is too long" 错误</li>
+</ol>
+
+<p>关键设计决定：<strong>不触发 stop hooks</strong>。因为 hook 可能会注入更多 token，导致 413 → hook → 更多 token → 413 的死循环。</p>
+
+<p>当 token 用量达到 <code>effectiveWindow - 3K</code> 且所有恢复手段都失败后，系统<strong>阻止继续对话</strong>，用户必须手动 <code>/compact</code> 或开启新 session。这是最终拦阻。</p>
+
+<!-- ========================================================== -->
+<h2 id="circuit-breaker">九、自我保护：电路断路器</h2>
+
+<p>最有趣的设计之一是<strong>电路断路器</strong>。数据表明：1,279 个 session 曾连续 50+ 次 autocompact 失败（最多 3,272 次），每天浪费约 <strong>25 万次 API 调用</strong>。</p>
+
+<p>解决方案：连续 3 次 autocompact 失败后，<strong>停止重试</strong>。断路器跳闸后，即使 token 用量超过阈值也不再触发。这避免了在"压缩本身不可行"的情况下（例如上下文已经不可恢复地超过限制），系统陷入无限重试的泥潭。</p>
+
+<p>断路器状态是每个会话级别的：重置在成功时发生，失败计数在每次失败后递增。这是个明智的工程取舍——与其尝试不可能的任务，不如让用户介入手动处理。</p>
+
+<!-- ========================================================== -->
+<h2 id="conclusion">十、Conclusion —— 几条关键设计原则</h2>
+
+<div class="card">
+  <h4 style="margin-top:0">1. 代价分层是核心架构</h4>
+  <p>不是单一算法，而是分层系统。从零成本的 Snip 到昂贵的 Full Compact，每一层都是上一层安全网。设计目标不是"完美的压缩"，而是"压缩成本恰好够用"。如果 Snip 释放了足够 token，那么 Microcompact 和后面的所有层都变成 no-op。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">2. 规则决策优先，LLM 决策兜底</h4>
+  <p>"丢弃什么"由规则决定——阈值、区间、配对完整性，全部可预测、可测试、零成本。LLM 只做它擅长的事："如何浓缩"。即使是 Full Compact，参数（保留多少、保留哪些文件、保留哪些 skill）也是规则设定的。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">3. 缓存效率是隐藏主线</h4>
+  <p>很多设计决策围绕 prompt cache 展开。Cache-sharing 的 forked agent 让 compact 的 ~200K token 几乎全部 cache-hit。时间触发的 microcompact 判断 cache 已冷才出手。缓存编辑路径则在不破坏热 cache 的前提下清理旧内容。一台 API 请求的费用敏感度渗透到每个细节。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">4. 子进程隔离防止状态污染</h4>
+  <p>压缩可能发生在主线程或 forked agent 中。压缩后的清理代码通过 <code>querySource</code> 区分：子 agent 的压缩不会重置主线程的模块级状态（microcompact 注册表、context collapse 提交日志等）。否则子 agent 压缩 → 清除主线程状态 → 主线程下次请求时 context collapse 丢失所有已保存的折叠。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">5. 不要追求完美，要追求足够好</h4>
+  <p>电路断路器接受"有时候就是不行"。Session Memory Compact 可能赶上提取还没完成，那就 fallback。Compact prompt 的 analysis 块是"草稿纸"——即使格式不完美，系统也能剥离后只剩 summary。PTL 重试最多 3 次，不行就放弃。每个不完美之处都有一个 fallback，组合起来就是一个健壮的系统。</p>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码 <code>src/services/compact/</code> · 2026-06-19
+</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 后台任务系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --blue: #2b6a9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--blue)}
+
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  .lifecycle-bar { display:flex; border-radius:6px; overflow:hidden; height:28px; margin:8px 0; font-size:0.72em; font-weight:600; }
+  .lifecycle-bar div { display:flex; align-items:center; justify-content:center; }
+
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .dot { color:var(--border); margin-right:4px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  .comp-table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.82em; }
+  .comp-table th, .comp-table td { border:1px solid var(--border); padding:4px 6px; text-align:left; vertical-align:top; }
+  .comp-table th { background:var(--surface); font-weight:600; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code 后台任务系统设计分析</h1>
+  <p class="sub">从教学版 BackgroundManager 到生产级任务类型系统 + 磁盘输出管道 + 优先级通知队列</p>
+  <div class="meta">
+    <span>src/tasks/LocalShellTask/</span>
+    <span>7 种任务类型</span>
+    <span>优先级通知队列</span>
+    <span>5 态状态机</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的后台任务系统是教学版 <code class="inline">s13_background_tasks.py</code>（一个简单的 <code class="inline">threading.Thread</code> + 内存通知队列）的<strong>生产级演化</strong>。核心变化是从"一个后台线程跑 shell"扩展为一套包含<strong>任务类型系统 + 磁盘输出管道 + 优先级通知队列 + React 状态管理</strong>的完整框架。</p>
+
+<div class="card">
+  <p style="margin:0"><strong>核心设计哲学：</strong>"主循环只管往前推进，后台结果通过外部队列异步回流。"教学版的 <code class="inline">drain_notifications()</code> 在生产代码中演化为全局 <code class="inline">commandQueue</code>，所有后台结果都经由优先级队列等待主循环的下一轮处理。</p>
+</div>
+
+<h3>关键数字</h3>
+<table>
+  <tr><td style="width:140px">任务类型</td><td>7 种（local_bash / local_agent / remote_agent / in_process_teammate / local_workflow / monitor_mcp / dream）</td></tr>
+  <tr><td>任务状态</td><td>5 态（pending → running → completed / failed / killed）</td></tr>
+  <tr><td>队列优先级</td><td>3 级（now / next / later），后台通知默认 <code class="inline">later</code></td></tr>
+  <tr><td>输出磁盘上限</td><td>5GB (<code class="inline">MAX_TASK_OUTPUT_BYTES</code>)</td></tr>
+  <tr><td>输出上下文上限</td><td>32KB 默认，160KB 上限 (<code class="inline">TASK_MAX_OUTPUT_LENGTH</code>)</td></tr>
+  <tr><td>Stall 检测</td><td>45s 无增长 + 尾部匹配交互提示模式</td></tr>
+  <tr><td>Assistant 自动背景化</td><td>阻塞命令 > 15s 自动转入后台</td></tr>
+  <tr><td>ID 熵</td><td>36^8 ≈ 2.8 万亿组合</td></tr>
+</table>
+
+<h3>三条核心设计原则</h3>
+
+<div class="card">
+  <h4 style="margin-top:0">1. 分离执行与通知</h4>
+  <p style="margin:0">后台执行只负责：产出结果到磁盘、控制状态机（running → completed/failed/killed）。通知队列只负责：将摘要 XML 带回到模型上下文。两者通过 <code class="inline">enqueueShellNotification()</code> 桥接。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">2. 输出永不直接入上下文</h4>
+  <p style="margin:0">完整输出走磁盘文件，通过 <code class="inline">&lt;output_file&gt;</code> 标签引用路径。上下文只放 XML 摘要通知。模型通过 Read 工具按需读取完整输出，由 <code class="inline">formatTaskOutput()</code> 做截断保护。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">3. 单主循环 + 全局外部队列</h4>
+  <p style="margin:0">主循环不等待后台任务。所有命令——用户输入、任务通知、孤儿权限——走同一个 <code class="inline">commandQueue</code>。主循环在 <code class="inline">handlePromptSubmit()</code> 中从队列取出最高优先级的命令进行处理。React 组件通过 <code class="inline">useSyncExternalStore</code> 订阅。</p>
+</div>
+
+<h2>二、核心架构</h2>
+
+<h3>2.1 后台任务生命周期</h3>
+
+<div class="flow">模型调用 BashTool(run_in_background=true)
+    │
+    ▼
+BashTool.tsx: runShellCommand 生成器
+    │
+    ├─ run_in_background === true
+    │   └─ spawnShellTask() ──→ spawnShellTask: LocalShellTask.tsx
+    │         ├─ createTaskStateBase(taskId, 'local_bash', ...)
+    │         ├─ registerTask(taskState, setAppState)  →  AppState.tasks[id]
+    │         │
+    │         ├─ shellCommand.background(taskId)
+    │         │   └─ 子进程 stdout/stderr fd → .output 文件 (bypass JS)
+    │         │
+    │         ├─ startStallWatchdog(taskId, ...)
+    │         │   └─ 每 5s 检查文件增长 → 45s 无增长 + 尾部匹配 → 告警
+    │         │
+    │         └─ shellCommand.result.then(result => { ... })
+    │               │
+    │               ├─ code === 0    → status='completed'
+    │               ├─ code !== 0    → status='failed'
+    │               ├─ 被 kill 过    → status='killed'
+    │               │
+    │               └─ enqueueShellNotification()
+    │                     │
+    │                     └─ enqueuePendingNotification() → commandQueue
+    │                           │
+    │                           ▼
+    │                    handlePromptSubmit → dequeue
+    │                           │
+    │                           ▼
+    │                    <task_notification> XML injected as user message
+    │                           │
+    │                           ▼
+    │                    模型在下一轮看到完成通知
+    │
+    ├─ run_in_background !== true
+    │   └─ 前台执行 → 超过 30s 自动 backgroundExistingForegroundTask()
+    │
+    └─ KAIROS + main thread + 超过 15s
+        └─ assistantAutoBackgrounded = true</div>
+
+<h3>2.2 状态机</h3>
+
+<div class="flow">       ┌──────────────────┐
+       │    pending        │
+       └────────┬─────────┘
+                │ spawnShellTask / registerTask
+                ▼
+       ┌──────────────────┐
+       │    running        │ ◄──────────── command 正在执行
+       └────────┬─────────┘
+                │
+        ┌───────┼───────┬──────────────────┐
+        ▼       ▼       ▼                  ▼
+   ┌────────┐ ┌──────┐ ┌───────┐    ┌──────────┐
+   │completed│ │failed│ │killed │    │ running  │
+   │ (exit 0)│ │(≠0)  │ │(kill) │    │(无变化)  │
+   └────────┘ └──────┘ └───────┘    └──────────┘
+        │         │        │
+        ▼         ▼        ▼
+   ┌────────────────────────────┐
+   │  terminal + notified       │
+   │  → 等待 GC eviction        │
+   │  (3s STOPPED_DISPLAY_MS)   │
+   └────────────────────────────┘
+        │
+        ▼
+   ┌────────────────────────────┐
+   │  evictTerminalTask()       │
+   │  → 从 AppState.tasks 移除   │
+   └────────────────────────────┘
+
+terminal = completed | failed | killed
+eviction 条件:
+  - isTerminalTaskStatus() = true
+  - notified = true
+  - 不在 panel grace period 内 (local_agent: 30s PANEL_GRACE_MS)</div>
+
+<h2>三、核心数据结构</h2>
+
+<h3>3.1 TaskStateBase（通用基字段）</h3>
+
+<table>
+  <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">id</code></td><td>string</td><td>类型前缀 + 8 字节随机（如 <code class="inline">ba1b2c3d4</code>）</td></tr>
+    <tr><td><code class="inline">type</code></td><td>TaskType</td><td>7 种类型之一</td></tr>
+    <tr><td><code class="inline">status</code></td><td>TaskStatus</td><td>pending → running → completed/failed/killed</td></tr>
+    <tr><td><code class="inline">description</code></td><td>string</td><td>任务描述</td></tr>
+    <tr><td><code class="inline">toolUseId</code></td><td>string?</td><td>对应的 tool_use ID，用于关联原始调用</td></tr>
+    <tr><td><code class="inline">startTime</code></td><td>number</td><td>开始时间戳</td></tr>
+    <tr><td><code class="inline">endTime</code></td><td>number?</td><td>结束时间戳</td></tr>
+    <tr><td><code class="inline">outputFile</code></td><td>string</td><td>完整输出文件路径</td></tr>
+    <tr><td><code class="inline">outputOffset</code></td><td>number</td><td>增量读取游标</td></tr>
+    <tr><td><code class="inline">notified</code></td><td>boolean</td><td>是否已向模型发送通知</td></tr>
+  </tbody>
+</table>
+
+<h3>3.2 LocalShellTaskState（具体字段）</h3>
+
+<table>
+  <thead><tr><th>字段</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">command</code></td><td>执行的 shell 命令</td></tr>
+    <tr><td><code class="inline">result</code></td><td>退出码 + 是否被中断</td></tr>
+    <tr><td><code class="inline">shellCommand</code></td><td>子进程控制句柄（kill/cleanup/result）</td></tr>
+    <tr><td><code class="inline">isBackgrounded</code></td><td>是否已转入后台（前台任务为 false）</td></tr>
+    <tr><td><code class="inline">lastReportedTotalLines</code></td><td>用于进度增量计算</td></tr>
+    <tr><td><code class="inline">agentId</code></td><td>所属 agent，用于 agent 退出时的孤儿清理</td></tr>
+    <tr><td><code class="inline">kind</code></td><td>UI 变体（bash / monitor）</td></tr>
+  </tbody>
+</table>
+
+<h3>3.3 TaskId 类型前缀</h3>
+
+<table>
+  <thead><tr><th>前缀</th><th>任务类型</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">b</code></td><td>local_bash</td></tr>
+    <tr><td><code class="inline">a</code></td><td>local_agent</td></tr>
+    <tr><td><code class="inline">r</code></td><td>remote_agent</td></tr>
+    <tr><td><code class="inline">t</code></td><td>in_process_teammate</td></tr>
+    <tr><td><code class="inline">w</code></td><td>local_workflow</td></tr>
+    <tr><td><code class="inline">m</code></td><td>monitor_mcp</td></tr>
+    <tr><td><code class="inline">d</code></td><td>dream</td></tr>
+  </tbody>
+</table>
+
+<h3>3.4 通知队列（commandQueue）</h3>
+
+<div class="card">
+  <p style="margin:0">全局单例 <code class="inline">commandQueue: QueuedCommand[]</code>，优先级 + FIFO 出队：</p>
+  <ul>
+    <li><strong>now</strong> (优先级 0)：紧急命令，用户输入直接提交</li>
+    <li><strong>next</strong> (优先级 1)：用户发起的常规命令，默认值</li>
+    <li><strong>later</strong> (优先级 2)：后台任务通知，<code class="inline">enqueuePendingNotification()</code> 的默认优先级</li>
+  </ul>
+  <p style="margin:0">所有命令——用户输入、任务通知、孤儿权限——都走同一个队列。非 React 代码通过 <code class="inline">getCommandQueue()</code> / <code class="inline">dequeue()</code> 直接操作；React 通过 <code class="inline">useSyncExternalStore</code> 订阅。</p>
+</div>
+
+<h2>四、通知 XML 格式</h2>
+
+<p>后台任务完成时，生产代码通过 XML 标签结构告知模型：</p>
+
+<div class="flow">&lt;task_notification&gt;
+  &lt;task_id&gt;ba1b2c3d4&lt;/task_id&gt;
+  &lt;tool_use_id&gt;toolu_xxx&lt;/tool_use_id&gt;
+  &lt;output_file&gt;/tmp/xxx/tasks/ba1b2c3d4.output&lt;/output_file&gt;
+  &lt;status&gt;completed&lt;/status&gt;
+  &lt;summary&gt;Background command "npm run build" completed (exit code 0)&lt;/summary&gt;
+&lt;/task_notification&gt;</div>
+
+<h3>关键标签设计</h3>
+<table>
+  <thead><tr><th>标签</th><th>用途</th><th>细节</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">task_id</code></td><td>唯一标识</td><td>匹配原始 BashTool 返回的 <code class="inline">backgroundTaskId</code></td></tr>
+    <tr><td><code class="inline">tool_use_id</code></td><td>关联原始调用</td><td>可选，存在时使模型能关联到之前的 tool_use</td></tr>
+    <tr><td><code class="inline">output_file</code></td><td>完整输出路径</td><td>模型可 Read 此文件获取完整输出</td></tr>
+    <tr><td><code class="inline">status</code></td><td>终结状态</td><td><span class="badge badge-green">completed</span> / <span class="badge badge-red">failed</span> / killed。没有此标签的通知被 SDK 发射器跳过</td></tr>
+    <tr><td><code class="inline">summary</code></td><td>摘要文本</td><td>前缀 <code class="inline">Background command </code> 用于通知折叠检测</td></tr>
+  </tbody>
+</table>
+
+<h2>五、三种后台执行触发模式</h2>
+
+<h3>模式 1：显式 <code class="inline">run_in_background</code></h3>
+<p>模型在 BashTool 调用时设 <code class="inline">run_in_background: true</code> → 立即 <code class="inline">spawnShellTask()</code> → 返回 <code class="inline">backgroundTaskId</code>。最直接的路径，与教学版 <code class="inline">BackgroundManager.run()</code> 对应。</p>
+
+<h3>模式 2：前台自动背景化（auto-backgrounding）</h3>
+<p>前台命令执行超过 30s 后自动转入后台。<code class="inline">ShellCommand.onTimeout</code> 回调触发 <code class="inline">startBackgrounding()</code>，通过 <code class="inline">backgroundExistingForegroundTask()</code> 原位翻转 <code class="inline">isBackgrounded: true</code>，避免重复的 SDK 事件和泄漏的清理回调。</p>
+
+<h3>模式 3：Assistant 模式超时背景化</h3>
+<p>KAIROS assistant 模式下，主 agent 的阻塞命令超过 <code class="inline">ASSISTANT_BLOCKING_BUDGET_MS = 15000ms</code> 自动转入后台，保持 agent 的协调能力不被阻塞。</p>
+
+<h2>六、输出管道：从进程到模型</h2>
+
+<div class="card">
+  <h3 style="margin-top:0">四层输出管道</h3>
+  <div class="call-chain">
+    <div><span class="func">layer 1: 进程 → 文件</span> <span class="comment">(bash 模式)</span></div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">子进程 stdout/stderr fd → 直接写入 .output 文件</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">JS 不处理原始输出流，通过文件 tail 获取进度</div>
+
+    <div class="sep" style="margin:6px 0;"></div>
+    <div><span class="func">layer 2: DiskTaskOutput</span> <span class="file">[diskOutput.ts]</span> <span class="comment">— 异步写入队列</span></div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">append() 入队 → 单 drain 循环按序写磁盘</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">#queueToBuffers() 用 splice 原地释放，通知 GC</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">5GB 上限 (MAX_TASK_OUTPUT_BYTES)</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">O_NOFOLLOW 防 symlink / O_EXCL 防覆盖</div>
+
+    <div class="sep" style="margin:6px 0;"></div>
+    <div><span class="func">layer 3: TaskOutput</span> <span class="file">[TaskOutput.ts]</span> <span class="comment">— 内存 + 轮询</span></div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">stdoutBuffer / stderrBuffer 内存缓冲</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">#recentLines 环形缓冲区 (1000 行)</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">1s 轮询文件尾 → React 进度回调</div>
+
+    <div class="sep" style="margin:6px 0;"></div>
+    <div><span class="func">layer 4: formatTaskOutput</span> <span class="file">[outputFormatting.ts]</span> <span class="comment">— AI 适配</span></div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">模型 Read 输出时调用，默认 32KB，上限 160KB</div>
+    <div class="indent-1" style="color:var(--text-dim);font-size:0.9em;">超限时截断：[Truncated. Full output: /path] + 末尾 N 字符</div>
+  </div>
+</div>
+
+<h3>增量输出读取</h3>
+<div class="flow">getTaskOutputDelta(taskId, fromOffset, maxBytes)
+    │
+    ├─ readFileRange(outputPath, fromOffset, maxBytes)
+    │   └─ 只从指定偏移读指定大小，不加载完整文件
+    │
+    ├─ 返回 { content, newOffset }
+    │   └─ content: 新增内容
+    │   └─ newOffset: 下一次读取的起始偏移
+    │
+    └─ ENOENT → 返回 ''（文件尚不存在，等下一轮）</div>
+
+<p>这个设计解决了教学版"每次全量读文件"的问题：通过游标 <code class="inline">outputOffset</code> 实现增量读取，避免每次 POLL 都加载完整文件。特别是在 <code class="inline">generateTaskAttachments()</code> 中，每轮只读 delta 内容。</p>
+
+<h2>七、通知折叠机制</h2>
+
+<p>教学版没有的功能——当多个后台 bash 任务连续完成时，生产代码会将成功通知合并：</p>
+
+<div class="flow">collapseBackgroundBashNotifications(messages)
+    │
+    ├─ 遍历 messages，寻找连续的成功任务通知
+    │   条件: type=user, status=completed, summary 以
+    │   "Background command " (BACKGROUND_BASH_SUMMARY_PREFIX) 开头
+    │
+    ├─ 找到 N 条连续匹配 → 合为 1 条:
+    │   <task_notification>
+    │     <status>completed</status>
+    │     <summary>N background commands completed</summary>
+    │   </task_notification>
+    │
+    └─ 失败的 / 被杀死的任务保持独立，不参与折叠</div>
+
+<p>Monitor 类型任务有自己的 prefix（<code class="inline">Monitor "</code>...），不参与 bash 折叠。Verbose 模式（Ctrl+O）下跳过折叠，每条通知独立显示。</p>
+
+<h2>八、Stall 探测</h2>
+
+<p>教学版有一个简单的 <code class="inline">detect_stalled(45s)</code> 超时标记。生产版本演化为智能的交互输入提示检测：</p>
+
+<div class="flow">startStallWatchdog(taskId, description, kind, toolUseId, agentId)
+    │
+    ├─ 每 5s 检查输出文件大小 (STALL_CHECK_INTERVAL_MS)
+    │   ├─ 大小增长 → reset 计时器
+    │   └─ 45s (STALL_THRESHOLD_MS) 无增长 → 读尾部 1024 字节
+    │
+    ├─ looksLikePrompt(tail) 模式匹配:
+    │   /\(y\/n\)/i, /\[y\/n\]/i, /\(yes\/no\)/i
+    │   "Are you sure?", "Press any key", "Continue?",
+    │   "Overwrite?", "Shall I", "Would you"
+    │
+    ├─ 匹配 → 发送不含 <status> 标签的告警通知
+    │   (SDK 发射器跳过，仅做提示)
+    │
+    └─ Monitor kind 跳过（monitor 是流式退出）</div>
+
+<p>这种设计比简单的超时标记更智能：只在外观像交互提示时才告警，长时间编译（<code class="inline">git log -S</code>、大型构建）不会误触发。</p>
+
+<h2>九、资源泄漏防护</h2>
+
+<p>生产代码解决了教学版未处理的资源泄漏问题：</p>
+
+<h3>9.1 按 Agent 的孤儿清理</h3>
+<div class="flow">killShellTasksForAgent(agentId, getAppState, setAppState)
+    │
+    ├─ 遍历 AppState.tasks
+    │   └─ isLocalShellTask && task.agentId === agentId && running
+    │       → killTask(taskId, setAppState)
+    │
+    └─ dequeueAllMatching(cmd => cmd.agentId === agentId)
+        └─ 清空该 agent 的待处理通知</div>
+
+<h3>9.2 任务输出生命周期</h3>
+<table>
+  <thead><tr><th>操作</th><th>影响</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">initTaskOutput()</code></td><td>O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW 创建空文件</td></tr>
+    <tr><td><code class="inline">appendTaskOutput()</code></td><td>异步追加内容到文件</td></tr>
+    <tr><td><code class="inline">flushTaskOutput()</code></td><td>等待所有排队写入完成</td></tr>
+    <tr><td><code class="inline">evictTaskOutput()</code></td><td>冲刷后仅从内存 map 移除，保留磁盘文件</td></tr>
+    <tr><td><code class="inline">cleanupTaskOutput()</code></td><td>取消写入 + 关闭句柄 + 删除磁盘文件</td></tr>
+    <tr><td><code class="inline">initTaskOutputAsSymlink()</code></td><td>创建 symlink 指向 agent transcript</td></tr>
+  </tbody>
+</table>
+
+<h3>9.3 <code class="inline">/clear</code> 安全</h3>
+<p>任务输出路径在首次调用时捕获 session ID，之后缓存。即使 <code class="inline">/clear</code> 调用 <code class="inline">regenerateSessionId()</code>，已有 TaskOutput 实例仍使用旧路径，避免后台任务输出文件丢失。</p>
+
+<h2>十、与教学代码（s13）的对比</h2>
+
+<table class="comp-table">
+  <thead><tr><th>维度</th><th style="width:35%">教学版 (s13)</th><th style="width:45%">生产版 (Claude Code)</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>线程管理</td>
+      <td><code class="inline">threading.Thread</code> daemon</td>
+      <td><code class="inline">ShellCommand</code> 封装子进程 + <code class="inline">AbortController</code> 信号 + <code class="inline">result.then</code> Promise</td>
+    </tr>
+    <tr>
+      <td>通知队列</td>
+      <td>内存 <code class="inline">list + drain()</code></td>
+      <td><code class="inline">commandQueue</code> 优先级队列 + FIFO + React <code class="inline">useSyncExternalStore</code> + 通知折叠</td>
+    </tr>
+    <tr>
+      <td>输出存储</td>
+      <td>整段 <code class="inline">write_text</code> 写文件</td>
+      <td><code class="inline">DiskTaskOutput</code> 异步 drain 队列 + <code class="inline">TaskOutput</code> 内存/磁盘双层 + 5GB 上限</td>
+    </tr>
+    <tr>
+      <td>输出读取</td>
+      <td>全量读文件 + 截断 500 字符</td>
+      <td>增量 <code class="inline">outputOffset</code> + 文件尾 tail + 截断头 + SDK event</td>
+    </tr>
+    <tr>
+      <td>状态机</td>
+      <td><code class="inline">running / completed / timeout / error</code></td>
+      <td><code class="inline">pending → running → completed / failed / killed</code>，5 态 + 严格 Terminal 守卫</td>
+    </tr>
+    <tr>
+      <td>任务类型</td>
+      <td>1 种（shell）</td>
+      <td>7 种（bash/agent/remote/teammate/workflow/monitor/dream）</td>
+    </tr>
+    <tr>
+      <td>资源清理</td>
+      <td>无（daemon thread 自动退）</td>
+      <td>Agent 级 <code class="inline">killShellTasksForAgent()</code> + 通知队列清理 + GC eviction + TOCTOU 防护</td>
+    </tr>
+    <tr>
+      <td>Stall 检测</td>
+      <td>简单超时标记（45s）</td>
+      <td>45s 无增长 + 尾部内容匹配交互提示模式</td>
+    </tr>
+    <tr>
+      <td>UI</td>
+      <td>print 文本</td>
+      <td>React/Ink 组件：进度条、状态面板、详情对话框、通知折叠</td>
+    </tr>
+    <tr>
+      <td>持久化</td>
+      <td>进程内存</td>
+      <td><code class="inline">AppState</code> + session storage + 磁盘文件（跨 <code class="inline">/clear</code> 存活）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>十一、与 s12 任务系统的边界</h2>
+
+<p>正如教学文档强调的，生产代码中两者的分离更加严格：</p>
+
+<div class="card">
+  <table>
+    <thead><tr><th></th><th>s12 风格：持久任务</th><th>s13 风格：后台任务</th></tr></thead>
+    <tbody>
+      <tr><td>管理模块</td><td><code class="inline">utils/tasks.ts</code></td><td><code class="inline">utils/task/framework.ts</code> + <code class="inline">Task.ts</code></td></tr>
+      <tr><td>数据实体</td><td><code class="inline">TaskRecord</code>（subject/description/blocks/status）</td><td><code class="inline">TaskStateBase</code>（command/process/outputFile/offset）</td></tr>
+      <tr><td>工具</td><td><code class="inline">TaskCreateTool</code> / <code class="inline">TaskUpdateTool</code> / <code class="inline">TaskGetTool</code></td><td><code class="inline">BashTool(run_in_background)</code> / <code class="inline">TaskStopTool</code> / <code class="inline">TaskOutputTool</code></td></tr>
+      <tr><td>生命周期</td><td>跨 session 持久</td><td>session 内运行</td></tr>
+      <tr><td>关注点</td><td>"要做什么 / 谁依赖谁 / 进度"</td><td>"哪个命令在跑 / 跑到什么状态 / 结果在哪"</td></tr>
+    </tbody>
+  </table>
+  <p style="margin:6px 0 0">它们通过同一个 <code class="inline">AppState.tasks</code> 状态树共存，由 <code class="inline">useTasksV2</code> hook 统一管理 UI 呈现。</p>
+</div>
+
+<h2>十二、关键设计权衡</h2>
+
+<div class="card">
+  <table>
+    <thead><tr><th style="width:60px">维度</th><th>评价</th></tr></thead>
+    <tbody>
+      <tr><td>灵活性</td><td>✅ 7 种任务类型覆盖全部场景。新增类型只需实现 <code class="inline">Task.kill()</code> 接口 + 注册到 <code class="inline">tasks.ts</code></td></tr>
+      <tr><td>简洁性</td><td>⚠️ 比教学版复杂 10 倍——分布式系统需要分布式状态的复杂性（TOCTOU、竞态、缓存一致性）</td></tr>
+      <tr><td>安全性</td><td>✅ <code class="inline">O_NOFOLLOW</code> 反 symlink 攻击、5GB 上限防磁盘撑爆、<code class="inline">O_EXCL</code> 防覆盖、sandbox 集成</td></tr>
+      <tr><td>可靠性</td><td>✅ TOCTOU 防护（fresh state 二次检查）、重试机制（transient fs error）、内存泄漏防护（环形 buffer + splice GC）</td></tr>
+      <tr><td>资源控制</td><td>✅ Agent 级孤儿清理、通知队列清理、延迟 eviction 避免闪烁、/clear 安全的 session ID 缓存</td></tr>
+      <tr><td>成本控制</td><td>✅ 通知折叠节约上下文、32KB 格式化截断控制 API token、输出文件按需读取不进上下文</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>十三、代码引用索引</h2>
+
+<h3>核心层 — 任务定义与状态管理</h3>
+<div class="file-ref"><span class="path">src/Task.ts</span><span class="role">任务类型/状态枚举、ID 生成（类型前缀 + 8 字节 randomBytes）、createTaskStateBase()、isTerminalTaskStatus()</span></div>
+<div class="file-ref"><span class="path">src/tasks/types.ts</span><span class="role">7 种 TaskState 联合类型、isBackgroundTask() 守卫（running/pending + isBackgrounded）</span></div>
+
+<h3>LocalShellTask 实现</h3>
+<div class="file-ref"><span class="path">src/tasks/LocalShellTask/LocalShellTask.tsx</span><span class="role">spawnShellTask() 主入口、signal 连接、registerTask、StallWatchdog、notification 构造、kill/cleanup 编排</span></div>
+<div class="file-ref"><span class="path">src/tasks/LocalShellTask/guards.ts</span><span class="role">LocalShellTaskState 类型定义、isLocalShellTask 类型守卫（从主要 TSX 提取以避免 React 模块依赖）</span></div>
+<div class="file-ref"><span class="path">src/tasks/LocalShellTask/killShellTasks.ts</span><span class="role">killTask() 原子 kill + notified 标记、killShellTasksForAgent() 按 agent 批量清理</span></div>
+
+<h3>输出系统</h3>
+<div class="file-ref"><span class="path">src/utils/task/diskOutput.ts</span><span class="role">DiskTaskOutput 异步写入队列（#drain）、getTaskOutputDelta() 游标增量读取、5GB 上限、O_NOFOLLOW/O_EXCL 安全防护、initTaskOutput/cleanupTaskOutput/evictTaskOutput 全生命周期</span></div>
+<div class="file-ref"><span class="path">src/utils/task/TaskOutput.ts</span><span class="role">TaskOutput 内存/磁盘双层缓冲（CircularBuffer 1000 行）、1s 轮询文件尾、React startPolling/stopPolling 控制</span></div>
+<div class="file-ref"><span class="path">src/utils/task/outputFormatting.ts</span><span class="role">formatTaskOutput() 32KB→160KB 截断、"Truncated. Full output: /path" 文件路径头</span></div>
+
+<h3>框架层</h3>
+<div class="file-ref"><span class="path">src/utils/task/framework.ts</span><span class="true">registerTask() 注册 + SDK 事件发射、updateTaskState() 原子类型安全更新、pollTasks() 主轮询、generateTaskAttachments() 增量 delta + GC eviction、applyTaskOffsetsAndEvictions() TOCTOU 安全应用、evictTerminalTask() 延迟 eviction</span></div>
+<div class="file-ref"><span class="path">src/utils/messageQueueManager.ts</span><span class="role">commandQueue 全局单例队列（优先级: now/next/later）、enqueue()/dequeue()/peek()/dequeueAllMatching()、useSyncExternalStore 兼容接口、通知折叠依赖的 isQueuedCommandEditable/Visible</span></div>
+<div class="file-ref"><span class="path">src/utils/collapseBackgroundBashNotifications.ts</span><span class="role">isCompletedBackgroundBash() 检测、连续成功通知合并为 "N background commands completed"</span></div>
+
+<h3>工具层</h3>
+<div class="file-ref"><span class="path">src/tools/BashTool/BashTool.tsx</span><span class="role">run_in_background 参数解析、runShellCommand 生成器（前台执行 → 自动背景化 → 显式背景化）、spawnShellTask/spawnBackgroundTask 路由、stall watchdog 集成</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskCreateTool/TaskCreateTool.ts</span><span class="role">s12 风格持久任务创建工具（独立于后台执行系统）</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskStopTool/TaskStopTool.ts</span><span class="role">停止后台任务工具</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskGetTool/TaskGetTool.ts</span><span class="role">查看任务状态工具</span></div>
+<div class="file-ref"><span class="path">src/tools/TaskOutputTool/TaskOutputTool.tsx</span><span class="role">读取后台任务完整输出工具（直接读 .output 文件）</span></div>
+
+<h3>集成层</h3>
+<div class="file-ref"><span class="path">src/utils/handlePromptSubmit.ts</span><span class="role">handlePromptSubmit() 处理用户输入 + dequeue 后台任务结果注入</span></div>
+<div class="file-ref"><span class="path">src/utils/backgroundHousekeeping.ts</span><span class="role">startBackgroundHousekeeping() 后台管家：extractMemories/autoDream/pluginUpdate/cleanup</span></div>
+<div class="file-ref"><span class="path">src/services/notifier.ts</span><span class="role">通知服务，投递后台任务完成事件</span></div>
+
+<h3>React 层</h3>
+<div class="file-ref"><span class="path">src/hooks/useTasksV2.ts</span><span class="role">主任务状态管理 hook，处理任务列表和状态变更同步</span></div>
+<div class="file-ref"><span class="path">src/hooks/useTaskListWatcher.ts</span><span class="role">任务列表变化监听</span></div>
+<div class="file-ref"><span class="path">src/hooks/useCancelRequest.ts</span><span class="role">取消操作传播到运行中的后台任务</span></div>
+<div class="file-ref"><span class="path">src/hooks/useSessionBackgrounding.ts</span><span class="role">session 整体背景化管理</span></div>
+<div class="file-ref"><span class="path">src/hooks/useInboxPoller.ts</span><span class="role">轮询后台任务结果收件箱</span></div>
+
+<h3>UI 组件</h3>
+<div class="file-ref"><span class="path">src/components/tasks/BackgroundTask.tsx</span><span class="role">后台任务组件</span></div>
+<div class="file-ref"><span class="path">src/components/tasks/BackgroundTasksDialog.tsx</span><span class="role">后台任务对话框</span></div>
+<div class="file-ref"><span class="path">src/components/tasks/ShellDetailDialog.tsx</span><span class="role">Shell 任务详情对话框</span></div>
+<div class="file-ref"><span class="path">src/components/tasks/ShellProgress.tsx</span><span class="role">Shell 进度显示组件</span></div>
+<div class="file-ref"><span class="path">src/components/TaskListV2.tsx</span><span class="role">主任务列表（含后台和持久任务）</span></div>
+<div class="file-ref"><span class="path">src/components/tasks/taskStatusUtils.tsx</span><span class="role">任务状态显示工具函数</span></div>
+
+<h2>十四、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px">设计哲学：<strong>"主循环只管往前推进，后台结果通过外部队列异步回流。"</strong></p>
+  <p style="margin:0">教学版 <code class="inline">BackgroundManager</code> 用 200 行 Python 展示了核心模式——后台线程 + 通知队列。生产版将其工程化为 100+ 文件、7 种任务类型、4 层输出管道、优先级通知队列的复杂系统，但核心思想不变：<strong>并行的是执行与等待，不是主循环本身。</strong></p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">从教学到生产的关键演化路径</h4>
+  <p><strong>1. 从单类型到类型系统</strong> — shell → 7 种任务（agent/remote/teammate/workflow/monitor/dream），每种有自己的生命周期和 kill 逻辑。</p>
+  <p><strong>2. 从内存列表到全局优先级队列</strong> — 简单 list → 三优先级 FIFO + React store 兼容接口 + 通知折叠。</p>
+  <p><strong>3. 从全量读写到增量流式管道</strong> — 整段写文件 → 异步 drain 队列 + 游标增量读取 + 尾部轮询 + 格式化适配。</p>
+  <p><strong>4. 从简单超时到智能 stall 检测</strong> — 45s 标记 → 交互输入提示模式识别，只在外观像提示时触发。</p>
+  <p><strong>5. 从无清理到完整资源生命周期</strong> — daemon 线程 → Agent 级孤儿清理 + TOCTOU 安全 + 延迟 eviction + 跨 /clear 安全。</p>
+</div>
+
+<div class="callout-tip callout">
+  <p><strong>关联阅读：</strong><a href="./task-system-analysis.html" style="color:var(--accent);">task-system-analysis.html</a> — 第 s12 章持久任务系统分析，理解后台任务（执行槽）与持久任务（工作板）的边界。
+  <a href="./error-recovery-analysis.html" style="color:var(--accent);">error-recovery-analysis.html</a> — 第 s11 章错误恢复策略，后台任务出错时的 fallback 路径。</p>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-06-21
+</p>
+
+</div>
+</body>
+</html>

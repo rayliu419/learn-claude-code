@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 工具系统</title>
+<style>
+  body {
+    background: #f5faf6;
+    color: #2d3a31;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+  }
+  h1 { font-size: 1.35em; color: #1a4a2e; border-bottom: 2px solid #c3dbcc; padding-bottom: 6px; margin-top: 28px; }
+  h2 { font-size: 1.2em; color: #1f5a38; margin-top: 24px; margin-bottom: 8px; }
+  h3 { font-size: 1.02em; color: #2a6b42; margin-top: 18px; margin-bottom: 6px; }
+  h4 { font-size: 0.95em; color: #357a50; margin: 12px 0 4px; }
+  p { margin: 6px 0; }
+  li { margin: 2px 0; }
+  code { font-size: 0.88em; background: #e8f5ec; padding: 1px 4px; border-radius: 3px; }
+  pre {
+    font-size: 0.8em;
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 6px;
+    padding: 10px 14px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  table {
+    font-size: 0.9em;
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0;
+  }
+  th { background: #d4eadb; border: 1px solid #c3dbcc; padding: 6px 8px; text-align: left; font-weight: 600; }
+  td { border: 1px solid #c3dbcc; padding: 5px 8px; vertical-align: top; }
+  tr:nth-child(even) { background: #f0f9f3; }
+  .card {
+    background: #e8f5ec;
+    border: 1px solid #c3dbcc;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 10px 0;
+  }
+  .summary { font-style: italic; color: #4a6b55; margin: 4px 0 12px; }
+  strong { color: #1a4a2e; }
+
+  /* === call-chain styles (shared with startup-flow.html) === */
+  .call-chain {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 0.8em;
+    line-height: 1.65;
+    padding: 10px 0;
+  }
+  .call-chain .func { color: #0a6e3a; font-weight: 600; }
+  .call-chain .file { color: #6b7a71; font-size: 0.9em; }
+  .call-chain .arrow { color: #8aa89a; }
+  .call-chain .comment { color: #6b7a71; font-style: italic; }
+  .indent-1 { padding-left: 20px; }
+  .indent-2 { padding-left: 40px; }
+  .indent-3 { padding-left: 60px; }
+  .indent-4 { padding-left: 80px; }
+  .dot { color: #6b8a7a; margin-right: 4px; }
+  .separator { border: none; border-top: 1px dashed #c3dbcc; margin: 16px 0; }
+</style>
+</head>
+<body>
+
+<h1>Claude Code 工具系统</h1>
+
+<div class="summary">Claude Code 采用高度工程化的工具架构，包含约 50+ 内置工具，覆盖文件操作、代码搜索、子代理调度、权限控制、工作流编排等能力。系统基于统一类型接口，通过中央注册表管理所有工具。</div>
+
+<h2>工具系统初始化与执行流程图</h2>
+
+<div class="card">
+  <h3>初始化阶段（启动时）— 工具注册与序列化</h3>
+  <div class="call-chain">
+    <div><span class="func">main() / setup()</span> <span class="file">[src/main.tsx / src/setup.ts]</span></div>
+
+    <div class="indent-1"><span class="arrow">└─</span> 异步预取阶段 — 并行执行</div>
+    <div class="indent-2"><span class="dot">•</span> <span class="func">connectMcpServices()</span> <span class="comment">— 连接 MCP 服务器（获取 MCP 工具）</span></div>
+    <div class="indent-2"><span class="dot">•</span> passEligibilityCheck / growthBookInit / bootstrapPrefetch</div>
+
+    <div class="indent-1" style="margin-top:6px;"><span class="arrow">└─</span> 工具注册链路</div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">getAllBaseTools()</span> <span class="file">[src/tools.ts]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> Bash, Read, Edit, Write, Glob, Grep, Agent … <span class="comment">— 约 50+ 内置工具</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">feature()</span> 条件编译 <span class="comment">— 实验性工具开关</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">USER_TYPE</span> 过滤 <span class="comment">— 'ant' 员工专有工具</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> MCP 服务连接状态 <span class="comment">— 控制 MCP 相关工具可见性</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">getTools(permissionContext)</span> <span class="comment">— 按当前模式过滤（normal/plan/swarm）</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">filterToolsByDenyRules()</span> <span class="comment">— 移除用户/项目拒绝规则中的工具</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">assembleToolPool(mcpTools)</span> <span class="file">[src/utils/toolPool.ts]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 合并 MCP 服务器动态工具</div>
+    <div class="indent-3"><span class="arrow">├─</span> 名称去重（MCP 同名工具优先）</div>
+    <div class="indent-3"><span class="arrow">└─</span> 排序：核心 → 延迟加载 → 实验性</div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">toolToAPISchema()</span> <span class="file">[src/utils/api.ts]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> Tool 对象 → <span class="func">BetaToolUnion</span>（API 可接受的格式）</div>
+    <div class="indent-3"><span class="arrow">├─</span> 填充 name / description / input_schema</div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">shouldDefer</span> 工具仅发送占位描述 <span class="comment">— 完整 schema 待 ToolSearch 查询</span></div>
+
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">queryContext.ts</span> 构建 cache_key 前缀 <span class="comment">— 含 tools hash 用于 prompt caching</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 序列化后的 tools 数组注入 system prompt 和 API <span class="func">tools</span> 参数</div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>运行时阶段（每轮 Query）— 工具调度与执行</h3>
+  <div class="call-chain">
+    <div><span class="func">queryLoop()</span> <span class="file">[src/query.ts]</span> <span class="comment">— while(true) 核心循环</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> 上下文管理（snip / compact）</div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">callModel()</span> <span class="comment">— 流式接收 tool_use content blocks</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">handleStopHooks()</span></div>
+
+    <div class="indent-1"><span class="arrow">└─</span> 工具执行阶段</div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">partitionToolCalls()</span> <span class="file">[src/services/tools/toolOrchestration.ts]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 按 <span class="func">isConcurrencySafe</span> 分组</div>
+    <div class="indent-3"><span class="arrow">├─</span> 同文件写入合并 <span class="comment">— 防止竞争条件</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 排序：read-only 优先，destructive 最后</div>
+
+    <div class="indent-2"><span class="arrow">├─</span> 流式模式？</div>
+    <div class="indent-3"><span class="arrow">├─</span> 是 → <span class="func">StreamingToolExecutor</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> 结果缓冲池（按 tool_use_id 索引）</div>
+    <div class="indent-4"><span class="arrow">├─</span> 并发安全工具并行，非安全串行</div>
+    <div class="indent-4"><span class="arrow">└─</span> 按模型返回顺序发射结果 <span class="comment">— 保持因果序</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 否 → <span class="func">runTools()</span> <span class="comment">— 串行分批执行</span></div>
+
+    <div class="indent-2"><span class="arrow">└─</span> 单工具执行流水线</div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">checkPermissionsAndCallTool()</span> <span class="file">[src/services/tools/toolExecution.ts]</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ① Zod Schema 校验 <span class="comment">— 参数格式验证</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ② <span class="func">validateInput()</span> 自定义校验 <span class="comment">— 文件存在性等</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ③ <span class="func">backfillObservableInput()</span> 输入回填 <span class="comment">— Hook 兼容字段</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ④ PreToolUse Hooks <span class="comment">— 可修改输入或阻止执行</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ⑤ 权限检查 <span class="comment">— Hook 决策 + 规则 + 弹窗 + 自动分类器</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ⑥ <span class="func">tool.call()</span> <span class="comment">— 实际执行逻辑</span></div>
+    <div class="indent-4"><span class="arrow">├─</span> ⑦ PostToolUse Hooks <span class="comment">— 后置处理</span></div>
+    <div class="indent-4"><span class="arrow">└─</span> ⑧ 结果处理 <span class="comment">— 大结果持久化、UI 渲染</span></div>
+
+    <div class="indent-2" style="margin-top:6px;"><span class="arrow">├─</span> injectAttachments <span class="comment">— 注入工具输出到对话</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> refreshTools <span class="comment">— 运行时更新工具池（MCP 动态变更）</span></div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">handleToolCallHooks()</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> 有 tool_use ? → <span class="func">继续循环</span> : <span class="func">return</span></div>
+  </div>
+</div>
+
+<hr class="separator">
+
+<h2>一、工具定义与注册</h2>
+
+<h3>1.1 核心接口</h3>
+<p><strong>文件:</strong> <code>src/Tool.ts</code> (第 362-695 行)</p>
+
+<p>所有工具必须满足 <code>Tool&lt;Input, Output&gt;</code> 类型契约，核心字段包括：</p>
+<ul>
+  <li><code>name</code> — 唯一标识工具名</li>
+  <li><code>aliases</code> — 兼容旧版对话的别名</li>
+  <li><code>call()</code> — 实际执行函数</li>
+  <li><code>inputSchema</code> — Zod 参数校验模式</li>
+  <li><code>description()</code> / <code>prompt()</code> — 模型阅读的描述</li>
+  <li><code>isEnabled / isConcurrencySafe / isReadOnly / isDestructive</code> — 安全/并发属性</li>
+  <li><code>shouldDefer</code> — 是否延迟加载（推迟到模型通过 ToolSearch 查询时才发送）</li>
+  <li><code>checkPermissions()</code> — 权限检查逻辑</li>
+  <li><code>maxResultSizeChars</code> — 大结果持久化阈值</li>
+</ul>
+
+<p><strong>工具构建函数:</strong> <code>buildTool()</code> (第 783-792 行) 从部分定义补全默认值，减少各工具的样板代码。默认值定义在 <code>TOOL_DEFAULTS</code> (第 757-769 行)。</p>
+
+<h3>1.2 中央注册表</h3>
+<p><strong>文件:</strong> <code>src/tools.ts</code></p>
+
+<p><code>getAllBaseTools()</code> (第 193-251 行) 是所有内置工具的单一收集点。工具可基于以下条件有条件地包含：</p>
+<ul>
+  <li>环境变量</li>
+  <li>编译期特性开关 <code>feature()</code></li>
+  <li>用户类型 <code>USER_TYPE</code>（普通用户 vs Ant 员工）</li>
+  <li>运行时的 MCP 服务可用性</li>
+</ul>
+
+<div class="card">
+<strong>注册后处理流程:</strong><br>
+<code>getAllBaseTools()</code> → <code>getTools(permissionContext)</code>（按模式过滤）→ <code>filterToolsByDenyRules()</code>（移除拒绝的工具）→ <code>assembleToolPool(mcpTools)</code>（合并 MCP 工具、去重、排序）
+</div>
+
+<h3>1.3 注册机制特点</h3>
+<ul>
+  <li><strong>非 class 继承</strong>：对象字面量 + <code>buildTool()</code> 工厂模式</li>
+  <li><strong>静态注册</strong>：启动时注册完毕，无运行时动态注册（MCP 工具除外）</li>
+  <li><strong>条件编译</strong>：<code>feature()</code> 控制实验性工具的包含</li>
+  <li><strong>延迟加载</strong>：<code>shouldDefer</code> 推迟重型工具的定义传输</li>
+</ul>
+
+<h2>二、内置工具清单</h2>
+
+<h3>2.1 核心工具（始终可用，21 个）</h3>
+<table>
+  <tr><th>工具名</th><th>目录</th><th>功能简述</th></tr>
+  <tr><td><strong>Bash</strong></td><td><code>BashTool/</code></td><td>执行 shell 命令，支持超时、后台、沙箱、权限检查</td></tr>
+  <tr><td><strong>Read</strong></td><td><code>FileReadTool/</code></td><td>读取文件，支持图片/PDF/Jupyter 多模态</td></tr>
+  <tr><td><strong>Edit</strong></td><td><code>FileEditTool/</code></td><td>精确字符串替换编辑（基于 diff）</td></tr>
+  <tr><td><strong>Write</strong></td><td><code>FileWriteTool/</code></td><td>新建或覆写文件</td></tr>
+  <tr><td><strong>Glob</strong></td><td><code>GlobTool/</code></td><td>Glob 模式文件搜索（按 mtime 排序）</td></tr>
+  <tr><td><strong>Grep</strong></td><td><code>GrepTool/</code></td><td>基于 ripgrep 的内容搜索（正则/多行/文件类型）</td></tr>
+  <tr><td><strong>Agent</strong></td><td><code>AgentTool/</code></td><td>启动子代理（Explore/Plan/general-purpose）</td></tr>
+  <tr><td><strong>TaskOutput</strong></td><td><code>TaskOutputTool/</code></td><td>获取子代理的结构化输出</td></tr>
+  <tr><td><strong>WebFetch</strong></td><td><code>WebFetchTool/</code></td><td>抓取网页，AI 摘要，15 分钟缓存</td></tr>
+  <tr><td><strong>WebSearch</strong></td><td><code>WebSearchTool/</code></td><td>网络搜索（仅美国可用）</td></tr>
+  <tr><td><strong>AskUserQuestion</strong></td><td><code>AskUserQuestionTool/</code></td><td>向用户发起选择题/多选交互</td></tr>
+  <tr><td><strong>EnterPlanMode</strong></td><td><code>EnterPlanModeTool/</code></td><td>进入计划模式探索与设计方案</td></tr>
+  <tr><td><strong>ExitPlanModeV2</strong></td><td><code>ExitPlanModeTool/</code></td><td>退出计划模式、提交方案审批</td></tr>
+  <tr><td><strong>TodoWrite</strong></td><td><code>TodoWriteTool/</code></td><td>创建和管理会话任务列表</td></tr>
+  <tr><td><strong>ToolSearch</strong></td><td><code>ToolSearchTool/</code></td><td>获取延迟加载工具的完整 schema</td></tr>
+  <tr><td><strong>Skill</strong></td><td><code>SkillTool/</code></td><td>执行斜杠命令/技能插件</td></tr>
+  <tr><td><strong>SendUserMessage (Brief)</strong></td><td><code>BriefTool/</code></td><td>向用户发送消息（主输出通道）</td></tr>
+  <tr><td><strong>ListMcpResources</strong></td><td><code>ListMcpResourcesTool/</code></td><td>列出 MCP 服务器资源</td></tr>
+  <tr><td><strong>ReadMcpResource</strong></td><td><code>ReadMcpResourceTool/</code></td><td>读取指定 MCP 资源</td></tr>
+  <tr><td><strong>TaskStop</strong></td><td><code>TaskStopTool/</code></td><td>停止运行中的后台任务</td></tr>
+  <tr><td><strong>NotebookEdit</strong></td><td><code>NotebookEditTool/</code></td><td>编辑 Jupyter notebook 单元格</td></tr>
+</table>
+
+<h3>2.2 任务管理工具（Todo V2）</h3>
+<table>
+  <tr><th>工具名</th><th>功能简述</th></tr>
+  <tr><td><strong>TaskCreate</strong></td><td>创建结构化任务，支持依赖与负责人</td></tr>
+  <tr><td><strong>TaskGet</strong></td><td>按 ID 查询任务详情</td></tr>
+  <tr><td><strong>TaskUpdate</strong></td><td>更新任务状态/负责人/依赖</td></tr>
+  <tr><td><strong>TaskList</strong></td><td>列出所有任务</td></tr>
+</table>
+
+<h3>2.3 多代理 / 团队工具</h3>
+<table>
+  <tr><th>工具名</th><th>功能简述</th></tr>
+  <tr><td><strong>SendMessage</strong></td><td>代理间消息传递（同团队 / UDS 跨会话）</td></tr>
+  <tr><td><strong>TeamCreate</strong></td><td>创建协调多个代理的团队（swarm 模式）</td></tr>
+  <tr><td><strong>TeamDelete</strong></td><td>删除团队及任务目录</td></tr>
+  <tr><td><strong>ListPeers</strong></td><td>发现跨会话节点（UDS/bridge/remote）</td></tr>
+</table>
+
+<h3>2.4 工作树工具</h3>
+<table>
+  <tr><th>工具名</th><th>功能简述</th></tr>
+  <tr><td><strong>EnterWorktree</strong></td><td>创建并进入隔离的 git worktree</td></tr>
+  <tr><td><strong>ExitWorktree</strong></td><td>退出 worktree，可选保留或删除</td></tr>
+</table>
+
+<h3>2.5 权限 / 模式工具</h3>
+<table>
+  <tr><th>工具名</th><th>功能简述</th></tr>
+  <tr><td><strong>McpAuth</strong></td><td>MCP 服务器 OAuth 授权流程</td></tr>
+  <tr><td><strong>TestingPermission</strong></td><td>测试专用（仅 NODE_ENV=test）</td></tr>
+</table>
+
+<h3>2.6 Ant 员工专有工具（USER_TYPE='ant'）</h3>
+<table>
+  <tr><th>工具名</th><th>功能简述</th></tr>
+  <tr><td><strong>Config</strong></td><td>查询/修改 Claude Code 配置</td></tr>
+  <tr><td><strong>Tungsten</strong></td><td>单例虚拟终端抽象（Ant 内部）</td></tr>
+  <tr><td><strong>REPL</strong></td><td>交互式 REPL，VM 内包装基础工具</td></tr>
+</table>
+
+<h3>2.7 特性开关控制工具（实验性）</h3>
+<table>
+  <tr><th>工具名</th><th>功能简述</th></tr>
+  <tr><td><strong>Sleep</strong></td><td>等待指定时长，无需 shell 进程，支持并发</td></tr>
+  <tr><td><strong>Monitor</strong></td><td>监控脚本事件流（tail / poll）</td></tr>
+  <tr><td><strong>CronCreate / Delete / List</strong></td><td>创建/取消/列出定时调度任务</td></tr>
+  <tr><td><strong>PushNotification</strong></td><td>发送桌面/手机推送通知</td></tr>
+  <tr><td><strong>RemoteTrigger</strong></td><td>管理远程代理（claude.ai CCR API）</td></tr>
+  <tr><td><strong>WebBrowser</strong></td><td>交互式网页浏览</td></tr>
+  <tr><td><strong>LSP</strong></td><td>语言服务器协议（跳转定义、查找引用等）</td></tr>
+  <tr><td><strong>Workflow</strong></td><td>执行工作流脚本</td></tr>
+  <tr><td><strong>SubscribePR</strong></td><td>通过 webhook 订阅 GitHub PR 活动</td></tr>
+  <tr><td><strong>SendUserFile</strong></td><td>向用户发送文件</td></tr>
+  <tr><td><strong>Snip / CtxInspect / OverflowTest / TerminalCapture</strong></td><td>调试/内部分析工具</td></tr>
+  <tr><td><strong>VerifyPlanExecution</strong></td><td>验证计划执行（仅 <code>CLAUDE_CODE_VERIFY_PLAN=true</code>）</td></tr>
+  <tr><td><strong>SuggestBackgroundPR</strong></td><td>建议从后台工作创建 PR</td></tr>
+</table>
+
+<h3>2.8 运行时动态工具</h3>
+<table>
+  <tr><th>工具名</th><th>说明</th></tr>
+  <tr><td><strong>MCPTool</strong></td><td>MCP 服务器工具的通用包装，<code>mcpClient.ts</code> 运行时动态覆写</td></tr>
+  <tr><td><strong>StructuredOutput</strong></td><td>SDK 非交互会话的结构化 JSON 输出合成工具</td></tr>
+</table>
+
+<h2>三、工具执行流水线</h2>
+
+<h3>3.1 总体架构（5 层）</h3>
+<pre>
+Layer 1: 工具注册 (tools.ts)
+  getAllBaseTools() → getTools() → assembleToolPool()
+
+Layer 2: API 序列化 (utils/api.ts)
+  toolToAPISchema() → BetaToolUnion → API tools[] 参数
+
+Layer 3: 流式执行 (StreamingToolExecutor.ts)
+  并行调度 → 结果缓冲 → 按序发射
+
+Layer 4: 编排 (toolOrchestration.ts)
+  runTools() → partitionToolCalls() → concurrent/serial 批处理
+
+Layer 5: 单工具执行 (toolExecution.ts)
+  校验 → Hook → 权限 → 执行 → 后处理
+</pre>
+
+<h3>3.2 单工具执行流程</h3>
+<p><strong>核心函数:</strong> <code>checkPermissionsAndCallTool()</code> — <code>src/services/tools/toolExecution.ts</code> (第 599 行)</p>
+<ol>
+  <li><strong>Zod Schema 校验</strong> — 参数格式验证，失败返回 <code>InputValidationError</code></li>
+  <li><strong>自定义校验</strong> — <code>validateInput()</code> 处理超出 Schema 的逻辑（如文件存在性）</li>
+  <li><strong>输入回填</strong> — <code>backfillObservableInput()</code> 为 Hook/权限添加遗留字段</li>
+  <li><strong>PreToolUse Hooks</strong> — 可做权限决策、修改输入、阻止执行</li>
+  <li><strong>权限检查</strong> — 集成 Hook 决策 + 规则权限 + 用户弹窗 + 自动分类器</li>
+  <li><strong>工具执行</strong> — <code>tool.call()</code> 运行实际逻辑</li>
+  <li><strong>PostToolUse Hooks</strong> — 后置处理</li>
+  <li><strong>结果处理</strong> — 映射 API 响应、大结果持久化、UI 渲染</li>
+</ol>
+
+<div class="card">
+<strong>并发模型:</strong> 并发安全工具（如 <code>Sleep</code>、不同文件的 <code>Read</code>）并行执行；非安全工具串行执行。结果按模型返回顺序缓冲发射，保持因果序。
+</div>
+
+<h3>3.3 权限安全体系</h3>
+<ul>
+  <li><strong>规则权限</strong> — always-allow / always-deny / always-ask 三种策略</li>
+  <li><strong>Hook 决策</strong> — 通过 PreToolUse Hook 自定义权限逻辑</li>
+  <li><strong>用户弹窗</strong> — 直接向用户请求授权</li>
+  <li><strong>自动分类器</strong> — Auto Mode 下自动判断</li>
+  <li><strong>拒绝追踪</strong> — 连续拒绝后临时自动拒绝</li>
+</ul>
+
+<h2>四、关键文件索引</h2>
+<table>
+  <tr><th>关注点</th><th>文件路径</th></tr>
+  <tr><td>Tool 类型定义 + <code>buildTool()</code></td><td><code>src/Tool.ts</code></td></tr>
+  <tr><td>中央注册表</td><td><code>src/tools.ts</code></td></tr>
+  <tr><td>工具允许/拒绝规则</td><td><code>src/constants/tools.ts</code></td></tr>
+  <tr><td>工具结果大小限制</td><td><code>src/constants/toolLimits.ts</code></td></tr>
+  <tr><td>单工具执行流水线</td><td><code>src/services/tools/toolExecution.ts</code></td></tr>
+  <tr><td>流式并发执行器</td><td><code>src/services/tools/StreamingToolExecutor.ts</code></td></tr>
+  <tr><td>工具编排（批处理）</td><td><code>src/services/tools/toolOrchestration.ts</code></td></tr>
+  <tr><td>前置/后置 Hook</td><td><code>src/services/tools/toolHooks.ts</code></td></tr>
+  <tr><td>React 工具池 Hook</td><td><code>src/hooks/useMergedTools.ts</code></td></tr>
+  <tr><td>工具池合并与过滤</td><td><code>src/utils/toolPool.ts</code></td></tr>
+  <tr><td>权限检查 Hook</td><td><code>src/hooks/useCanUseTool.tsx</code></td></tr>
+  <tr><td>工具实现（约 40+ 目录）</td><td><code>src/tools/*/</code></td></tr>
+  <tr><td>API Schema 序列化</td><td><code>src/utils/api.ts</code></td></tr>
+  <tr><td>MCP 工具动态包装</td><td><code>src/services/mcp/mcpClient.ts</code></td></tr>
+</table>
+
+<h2>结论</h2>
+<ul>
+  <li><strong>统一契约</strong>：所有工具遵循同一类型接口，结构一致可预测</li>
+  <li><strong>集中注册</strong>：单一注册点保证完整性，避免分散注册的遗漏</li>
+  <li><strong>分层权限</strong>：Hook → 规则 → 用户交互，5 层安全防护</li>
+  <li><strong>灵活并发</strong>：并发安全声明 + 流式执行器实现高效并行调度</li>
+  <li><strong>条件可用性</strong>：特性开关、环境变量、用户类型多维度控制工具可见性</li>
+  <li><strong>MCP 扩展</strong>：MCP 工具作为一等公民与内置工具统一处理</li>
+</ul>
+
+</body>
+</html>

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>learn-claude-code 文档</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #f5faf6;
+  color: #2d3a31;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 20px;
+}
+.container { max-width: 900px; margin: 0 auto; }
+h1 { font-size: 1.35em; margin-bottom: 10px; border-bottom: 1px solid #c3dbcc; padding-bottom: 8px; }
+h2 { font-size: 1.2em; margin-top: 20px; margin-bottom: 8px; }
+h3 { font-size: 1.02em; margin-top: 14px; margin-bottom: 6px; }
+p { margin: 6px 0; }
+a { color: #1a6b3c; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.section { margin-bottom: 16px; }
+.card {
+  background: #e8f5ec;
+  border: 1px solid #c3dbcc;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 4px 0;
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+.card a { display: block; font-weight: 500; }
+.card .desc { font-size: 0.88em; color: #4a6b55; margin-top: 2px; }
+ul { list-style: none; }
+li { margin: 2px 0; }
+.note-meta { font-size: 0.88em; color: #6a8b75; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>learn-claude-code 文档</h1>
+
+<p>从 0 到 1 实现类似 Claude Code 功能的教学仓库 &mdash; <a href="https://github.com/shareAI-lab/learn-claude-code">GitHub</a></p>
+
+<div class="section">
+<h2>📖 教学文档</h2>
+<div class="card">
+<ul>
+<li><a href="zh/">中文 (zh)</a> — 最完整的教学文档</li>
+<li><a href="en/">English (en)</a> — 主要章节</li>
+<li><a href="ja/">日本語 (ja)</a> — 主要章节</li>
+</ul>
+</div>
+</div>
+
+<div class="section">
+<h2>🔍 Claude Code 源码分析</h2>
+<p class="note-meta">Claude Code 生产级源码的逆向分析笔记 (19 篇)</p>
+<div class="card-grid">
+
+<div class="card">
+<a href="notes/startup-flow.html">启动函数调用图</a>
+<div class="desc">Claude Code 启动流程分析</div>
+</div>
+
+<div class="card">
+<a href="notes/system-prompt-analysis.html">系统提示词构造</a>
+<div class="desc">System Prompt 的构建与注入机制</div>
+</div>
+
+<div class="card">
+<a href="notes/tool-system-study.html">工具系统</a>
+<div class="desc">工具注册、调度与执行框架</div>
+</div>
+
+<div class="card">
+<a href="notes/todo-write-analysis.html">TodoWrite 实现分析</a>
+<div class="desc">工具 ≠ 提示词 — TodoWrite 的独立实现</div>
+</div>
+
+<div class="card">
+<a href="notes/subagent-analysis.html">Subagent 系统</a>
+<div class="desc">子代理的创建、通信与生命周期管理</div>
+</div>
+
+<div class="card">
+<a href="notes/skill-system-analysis.html">Skill 系统</a>
+<div class="desc">技能插件的加载与执行机制</div>
+</div>
+
+<div class="card">
+<a href="notes/context-compaction-study.html">Context Compaction</a>
+<div class="desc">上下文压缩策略与实现</div>
+</div>
+
+<div class="card">
+<a href="notes/permission-system-analysis.html">Permission 系统</a>
+<div class="desc">安全权限控制与用户确认机制</div>
+</div>
+
+<div class="card">
+<a href="notes/hook-system-analysis.html">Hook 系统</a>
+<div class="desc">插件化扩展点 — 生命周期钩子</div>
+</div>
+
+<div class="card">
+<a href="notes/memory-system-analysis.html">Memory 系统</a>
+<div class="desc">跨会话持久化知识存储</div>
+</div>
+
+<div class="card">
+<a href="notes/error-recovery-analysis.html">错误恢复系统</a>
+<div class="desc">错误处理与自动恢复策略</div>
+</div>
+
+<div class="card">
+<a href="notes/task-system-analysis.html">任务系统</a>
+<div class="desc">持久化任务依赖图与多步工作</div>
+</div>
+
+<div class="card">
+<a href="notes/background-task-analysis.html">后台任务系统</a>
+<div class="desc">异步后台任务执行机制</div>
+</div>
+
+<div class="card">
+<a href="notes/cron-scheduler-analysis.html">定时调度</a>
+<div class="desc">Cron Scheduler 定时任务调度</div>
+</div>
+
+<div class="card">
+<a href="notes/agent-teams-analysis.html">Agent Teams / Swarm</a>
+<div class="desc">多代理团队协作系统</div>
+</div>
+
+<div class="card">
+<a href="notes/team-protocols-analysis.html">Team Protocols</a>
+<div class="desc">团队通信协议与协作规范</div>
+</div>
+
+<div class="card">
+<a href="notes/autonomous-agents-analysis.html">Autonomous Agents</a>
+<div class="desc">自主代理的运行与监督</div>
+</div>
+
+<div class="card">
+<a href="notes/worktree-analysis.html">Worktree 系统</a>
+<div class="desc">Git Worktree 隔离执行环境</div>
+</div>
+
+<div class="card">
+<a href="notes/mcp-plugin-analysis.html">MCP &amp; Plugin</a>
+<div class="desc">MCP 协议与插件系统集成</div>
+</div>
+
+</div>
+</div>
+
+<div class="section">
+<h2>📄 其他资源</h2>
+<div class="card">
+<ul>
+<li><a href="reference.md">参考资料 (reference.md)</a></li>
+<li><a href="agentic_design_pattern_cn.pdf">Agentic Design Pattern (中文 PDF)</a></li>
+<li><a href="50714_Agent_Harness_Engineerin.pdf">Agent Harness Engineering (PDF)</a></li>
+<li><a href="50738_Agent_Systems_with_Harne.pdf">Agent Systems with Harness (PDF)</a></li>
+</ul>
+</div>
+</div>
+
+</div>
+</body>
+</html>

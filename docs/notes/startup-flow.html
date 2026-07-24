@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 启动函数调用图</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #f5faf6;
+  color: #2d3a31;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 20px;
+}
+h1 { font-size: 1.35em; margin-bottom: 12px; color: #1a3a2a; }
+h2 { font-size: 1.2em; margin: 18px 0 8px; color: #1a5a3a; }
+h3 { font-size: 1.02em; margin: 12px 0 6px; color: #1a4a32; }
+p { margin: 6px 0; }
+.card {
+  background: #e8f5ec;
+  border: 1px solid #c3dbcc;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.call-chain {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.8em;
+  line-height: 1.65;
+  padding: 10px 0;
+}
+.call-chain .func {
+  color: #0a6e3a;
+  font-weight: 600;
+}
+.call-chain .file {
+  color: #6b7a71;
+  font-size: 0.9em;
+}
+.call-chain .arrow {
+  color: #8aa89a;
+}
+.call-chain .comment {
+  color: #6b7a71;
+  font-style: italic;
+}
+.call-chain .branch-desc {
+  color: #3a6a4a;
+}
+.indent-1 { padding-left: 20px; }
+.indent-2 { padding-left: 40px; }
+.indent-3 { padding-left: 60px; }
+.indent-4 { padding-left: 80px; }
+.dot { color: #6b8a7a; margin-right: 4px; }
+
+.func-card {
+  background: #e8f5ec;
+  border-left: 3px solid #2d8a4a;
+  padding: 10px 14px;
+  margin: 8px 0;
+  border-radius: 0 6px 6px 0;
+}
+.func-card .func-name {
+  font-weight: 600;
+  color: #0a6e3a;
+}
+.func-card .func-file {
+  color: #6b7a71;
+  font-size: 0.88em;
+}
+.func-card .func-desc {
+  margin-top: 4px;
+  color: #2d3a31;
+}
+
+.separator {
+  border: none;
+  border-top: 1px dashed #c3dbcc;
+  margin: 16px 0;
+}
+
+code {
+  background: #dceee0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.88em;
+}
+pre {
+  background: #dceee0;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.8em;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+</style>
+</head>
+<body>
+
+<h1>Claude Code 启动函数调用图</h1>
+
+<div class="card">
+  <h3>启动主链路：<code>main()</code> → SessionStart</h3>
+  <div class="call-chain">
+    <div><span class="func">main()</span> <span class="file">[src/main.tsx]</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> Commander CLI 配置</div>
+    <div class="indent-2"><span class="dot">•</span> 注册所有 <code>--flags</code> (--print, --resume, --worktree, ...)</div>
+    <div class="indent-2"><span class="dot">•</span> 注册子命令 (mcp, auth, plugin, skill, task, config)</div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">program.parseAsync()</span> <span class="comment">→ 触发 action handler</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> action handler</div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">setup()</span> <span class="file">[src/setup.ts]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> Node.js 版本检查</div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">startUdsMessagingServer()</span> <span class="comment">— UDS 消息服务</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 捕获 teammate/swarm 快照</div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">restoreTerminalSettings()</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">setCwd()</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">captureHooksConfig()</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">startFileWatcher()</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 创建 git worktree <span class="comment">(可选, --worktree)</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> 数据库 migrations</div>
+    <div class="indent-2"><span class="arrow">├─</span> 初始化 settings / resolve model / trust dialog</div>
+    <div class="indent-2"><span class="arrow">├─</span> 计算 MCP 配置 / tools / agent definitions</div>
+
+    <div class="indent-2"><span class="arrow">├─</span> 异步预取 <span class="comment">(不阻塞启动)</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> <span class="func">connectMcpServices()</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> passEligibilityCheck</div>
+    <div class="indent-3"><span class="arrow">├─</span> growthBookInit</div>
+    <div class="indent-3"><span class="arrow">└─</span> bootstrapPrefetch</div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">processSessionStartHooks('startup')</span></div>
+
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">launchRepl(root, &lt;App&gt;&lt;REPL /&gt;&lt;/App&gt;)</span> <span class="file">[src/replLauncher.tsx]</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">renderAndRun()</span> <span class="comment">— 渲染 Ink 终端 UI</span></div>
+
+    <div class="indent-1" style="margin-top:6px;"><span class="arrow">└─</span> <strong>SessionStart</strong> <span class="comment">— REPL 就绪, 等待用户输入</span></div>
+  </div>
+</div>
+
+<hr class="separator">
+
+<div class="card">
+  <h3>用户输入处理链</h3>
+  <div class="call-chain">
+    <div><span class="func">REPL.onSubmit()</span> <span class="file">[src/screens/REPL.tsx]</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> 检查斜杠命令，直接处理</div>
+
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">handlePromptSubmit(text, …)</span> <span class="file">[src/utils/handlePromptSubmit.ts]</span></div>
+
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">processUserInput(text)</span> <span class="file">[src/utils/processUserInput/]</span></div>
+    <div class="indent-3"><span class="arrow">├─</span> 输入解析, 附件处理</div>
+    <div class="indent-3"><span class="arrow">└─</span> 构建 user message</div>
+
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">onQuery(messages, …)</span> <span class="comment">→ query.ts</span></div>
+
+    <div class="indent-3"><span class="arrow">└─</span> <span class="func">query({messages, systemPrompt})</span> <span class="file">[src/query.ts]</span></div>
+
+    <div class="indent-4"><span class="arrow">└─</span> <span class="func">queryLoop()</span> <span class="comment">— while(true) 核心循环</span></div>
+
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">├─</span> 上下文管理 (snip / compact)</div>
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">├─</span> <span class="func">callModel()</span> <span class="comment">— API 调用 → 流式接收 tool_use + text</span></div>
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">├─</span> <span class="func">handleStopHooks()</span></div>
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">├─</span> 执行 tools</div>
+    <div class="indent-4" style="padding-left:120px;"><span class="arrow">├─</span> <span class="func">StreamingToolExecutor</span> <span class="comment">(流式并行)</span></div>
+    <div class="indent-4" style="padding-left:120px;"><span class="arrow">└─</span> <span class="func">runTools()</span> <span class="comment">(分阶段执行)</span></div>
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">├─</span> injectAttachments</div>
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">├─</span> refreshTools</div>
+    <div class="indent-4" style="padding-left:100px;"><span class="arrow">└─</span> 有 tool_use? → <span class="func">继续循环</span> / <span class="func">return</span></div>
+  </div>
+</div>
+
+<hr class="separator">
+
+<h2>核心函数说明</h2>
+
+<div class="func-card">
+  <div class="func-name">main()</div>
+  <div class="func-file">src/main.tsx — 入口</div>
+  <div class="func-desc">配置 Commander.js CLI（flags + 子命令），编排完整启动序列。负责解析 argv、调用 setup()、触发异步预取、执行 hooks、最终 launchRepl()。约 4500 行。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">setup()</div>
+  <div class="func-file">src/setup.ts — 环境初始化</div>
+  <div class="func-desc">检测 Node.js 版本、恢复终端设置（iTerm2/Terminal.app）、启动 UDS 消息服务、设置 CWD、捕获 hooks 配置快照、启动文件变更监听、创建 git worktree（可选）。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">processSessionStartHooks('startup')</div>
+  <div class="func-file">src/hooks/ — SessionStart hooks</div>
+  <div class="func-desc">启动时异步执行 SessionStart 类型的 hooks。hooks 的返回值（初始消息）作为 <code>initialMessages</code> 传入 REPL。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">launchRepl()</div>
+  <div class="func-file">src/replLauncher.tsx — REPL 启动器</div>
+  <div class="func-desc">动态 import &lt;App&gt; + &lt;REPL&gt; Ink 组件，调用 <code>renderAndRun()</code> 渲染到终端。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">&lt;REPL&gt;</div>
+  <div class="func-file">src/screens/REPL.tsx — 核心交互组件</div>
+  <div class="func-desc">全屏终端 UI 组件。管理消息列表、用户输入框、会话生命周期。协调 background queue、mailbox、swarm 协调、session persistence。用户 submit 后调用 handlePromptSubmit() → onQuery()。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">query() / queryLoop()</div>
+  <div class="func-file">src/query.ts — AgentLoop 核心</div>
+  <div class="func-desc">async generator，每次用户提问触发一次 query()。内层 queryLoop() 是 while(true) 循环：<br>
+  上下文管理 → callModel() → handleStopHooks() → 执行 tools → injectAttachments → refreshTools → 判断是否继续。一次提问可能多轮 tool interaction。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">StreamingToolExecutor</div>
+  <div class="func-file">src/services/tools/StreamingToolExecutor.ts — 流式工具执行</div>
+  <div class="func-desc">流式模式下，在模型输出 tool_use 的同时并行执行工具。读写分离：read-only 工具可并行，write 工具串行。</div>
+</div>
+
+<div class="func-card">
+  <div class="func-name">handlePromptSubmit()</div>
+  <div class="func-file">src/utils/handlePromptSubmit.ts — 输入处理入口</div>
+  <div class="func-desc">执行 UserPromptSubmit hooks、解析附件、构建消息，分发给对应的 handler，最终调用 onQuery()。</div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Autonomous Agents 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code Autonomous Agents 系统设计分析</h1>
+  <p class="sub">In-Process Teammate 的多轮工作循环：WORK → IDLE → poll → claim → WORK</p>
+  <div class="meta">
+    <span>inProcessRunner.ts</span>
+    <span>waitForNextPromptOrShutdown</span>
+    <span>tryClaimNextTask + file lock</span>
+    <span>idle_notification 协议</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的自治智能体机制构建在 In-Process Teammate 的<strong>多轮工作循环</strong>之上。生产代码中的"自治"不是教学版 s17 的 <code class="inline">WORK → IDLE → poll → claim → WORK</code> 显式阶段切换，而是 <code class="inline">runInProcessTeammate()</code> 主循环中 <code class="inline">runAgent()</code>（工作）→ <code class="inline">waitForNextPromptOrShutdown()</code>（空闲轮询）的自然交替。</p>
+
+<h3>核心概念对比</h3>
+<table>
+  <thead><tr><th>概念</th><th>教学版 (s17)</th><th>生产版 (Claude Code)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>WORK/IDLE 阶段</strong></td><td>显式阶段切换（idle 工具调用）</td><td>主 while 循环自然交替 — runAgent → idle poll → runAgent</td></tr>
+    <tr><td><strong>空闲轮询</strong></td><td>5s 间隔 + 60s 超时</td><td>500ms 间隔 + 一直轮询（无限期存活）</td></tr>
+    <tr><td><strong>任务认领</strong></td><td>scan_unclaimed + claim_task + 锁</td><td>tryClaimNextTask + proper-lockfile + 原子检查</td></tr>
+    <tr><td><strong>空闲退出</strong></td><td>60s 超时 → shutdown</td><td>不超时退出 — 通过 shutdown_request 协议或 AbortController</td></tr>
+    <tr><td><strong>身份重注入</strong></td><td>ensure_identity_context 显式</td><td>TEAMMATE_SYSTEM_PROMPT_ADDENDUM 持久化 + forkContextMessages</td></tr>
+    <tr><td><strong>认领日志</strong></td><td>claim_events.jsonl</td><td>task 文件 owner 直接回写</td></tr>
+  </tbody>
+</table>
+
+<h2>二、主循环：WORK → IDLE 自然交替</h2>
+
+<p>生产版的自治循环不是通过"模型主动调用 idle 工具"进入空闲阶段，而是由 <code class="inline">runInProcessTeammate()</code> 的 while 循环天然实现：</p>
+
+<div class="flow">runInProcessTeammate()  ← 在独立的 AsyncLocalStorage 上下文中
+  │
+  ├─ buildSystemPrompt()           ← 含 TEAMMATE_SYSTEM_PROMPT_ADDENDUM
+  ├─ tryClaimNextTask()            ← 立即尝试认领（让 UI 从一开始就显示活动）
+  │
+  └─ while (!abort && !shouldExit) ← 主循环
+       │
+       │  ═══════  WORK PHASE  ═══════
+       ├─ create currentWorkAbortController  ← 仅中断本轮（Escape），不杀死队友
+       ├─ set isIdle: false                   ← 标记为工作中
+       ├─ runAgent()                          ← 完整的 agent loop
+       │    └─ 共享核心 API 基础设施
+       │       (query + runAgent + tool dispatch)
+       │
+       │  ═══════  WORK COMPLETE  ═══════
+       ├─ set isIdle: true                    ← 标记为空闲
+       ├─ sendIdleNotification(leader)        ← 通知 Leader
+       │    └─ idleReason: 'available'
+       │                    'interrupted'     ← Escape 中断
+       │                    'failed'          ← 运行时异常
+       │
+       │  ═══════  IDLE PHASE  ═══════
+       └─ waitForNextPromptOrShutdown()       ← 阻塞直到有工作
+            ├─ pendingUserMessages?           ← 最高优先级（Leader 直接 push）
+            ├─ shutdown_request?              ← 优先于普通消息
+            ├─ leader messages?               ← 优先于 peer 消息
+            ├─ peer messages?                 ← FIFO
+            └─ tryClaimNextTask()             ← 最低优先级
+                 │
+                 └─ 找到可认领任务 → 返回 new_message
+                    否则 → 继续下一轮 500ms 轮询</div>
+
+<h3>与教学版的阶段比较</h3>
+
+<table>
+  <thead><tr><th>维度</th><th>教学版 (s17)</th><th>生产版</th></tr></thead>
+  <tbody>
+    <tr><td><strong>进入空闲</strong></td><td>模型调用 <code class="inline">idle</code> 工具</td><td>runAgent 完成后自动进入</td></tr>
+    <tr><td><strong>空闲轮询</strong></td><td><code class="inline">sleep(POLL_INTERVAL=5s)</code></td><td><code class="inline">sleep(500ms)</code>，但只有 pollCount > 0 时 sleep</td></tr>
+    <tr><td><strong>超时退出</strong></td><td>60s 无活动 → shutdown</td><td>永不超时退出（持续 poll，直到 abort 或 shutdown_request）</td></tr>
+    <tr><td><strong>消息优先级</strong></td><td>邮箱优先于任务板</td><td>pendingUserMessages → shutdown → leader → peer → task-claim</td></tr>
+    <tr><td><strong>工作中断</strong></td><td>无</td><td>currentWorkAbortController（Escape 中断本轮）</td></tr>
+  </tbody>
+</table>
+
+<h2>三、空闲轮询引擎：waitForNextPromptOrShutdown</h2>
+
+<p>这是生产版中"自治"行为的核心技术。它每隔 500ms 检查四种来源的输入，按优先级返回：</p>
+
+<div class="flow">waitForNextPromptOrShutdown(identity, abortController, taskId, ...)
+  │
+  │  500ms 循环（无超时，直到 abort）
+  │
+  ├─ [1] pendingUserMessages[]                           ← 最高优先级
+  │   └─ Leader 通过 injectUserMessageToTeammate() 直接 push 的消息
+  │   └─ 零延迟，不需要 mailbox 轮询
+  │   └─ 返回 { type: 'new_message', from: 'user' }
+  │
+  ├─ [2] Mailbox shutdown_request 扫描                   ← 第二优先级
+  │   └─ 扫描所有未读消息，优先检测 shutdown_request
+  │   └─ 防止 peer-to-peer 消息洪泛导致 shutdown 饥饿
+  │   └─ 返回 { type: 'shutdown_request' }
+  │
+  ├─ [3] Mailbox leader → peer 优先级                    ← 第三优先级
+  │   └─ 先找来自 team-lead 的未读消息
+  │   └─ 未找到则找第一个未读消息（FIFO）
+  │   └─ 返回 { type: 'new_message', from: sender }
+  │
+  └─ [4] tryClaimNextTask(taskListId, agentName)          ← 最低优先级
+      ├─ listTasks() 获取完整任务列表
+      ├─ findAvailableTask(): pending + 无 owner + 无阻塞
+      ├─ claimTask() 原子认领（proper-lockfile）
+      └─ 认领成功 → formatTaskAsPrompt()
+           └─ 返回 { type: 'new_message', from: 'task-list' }</div>
+
+<div class="callout-tip callout">
+  <p><strong>设计关键：</strong>这种按来源的优先级设计确保了"明确的指令（Leader push / mailbox 消息）总是优先于自治扫描到的任务"。这与教学版"先看邮箱，再看任务板"的顺序一致，但增加了 shutdown 和 pendingUserMessages 两个更高优先级路径。</p>
+</div>
+
+<h2>四、任务认领机制</h2>
+
+<h3>可认领条件</h3>
+<div class="flow">findAvailableTask(tasks: Task[]): Task | undefined
+  │
+  ├─ task.status === 'pending'             ← 未开始
+  ├─ !task.owner                            ← 无人认领
+  └─ task.blockedBy 全部 resolve            ← 无前置阻塞
+       └─ blockedBy 中的每个 ID 在 tasks 中的状态 != 'completed'
+           → 该任务仍 unresolved → 跳过此 task</div>
+
+<p>与教学版的差异：</p>
+<ul>
+  <li>教学版有 <code class="inline">claim_role</code> / <code class="inline">required_role</code> 角色过滤，生产版暂时没有角色匹配逻辑（所有 teammate 使用同一个 taskListId）</li>
+  <li>教学版有 <code class="inline">claim_source: 'auto' | 'manual'</code> 记录，生产版通过 task owner 字段跟踪</li>
+  <li>教学版有 claim_events.jsonl 日志，生产版通过 task 文件的 owner 回写 + lockfile 实现原子性</li>
+</ul>
+
+<h3>原子认领</h3>
+<p><code class="inline">claimTask()</code> 使用 <code class="inline">proper-lockfile</code> 确保原子性，防止竞态：</p>
+
+<div class="flow">claimTask(taskListId, taskId, claimantAgentId)
+  ├─ 检查任务文件存在性
+  ├─ lockfile.lock(taskPath)               ← 独占锁
+  ├─ 读当前任务状态
+  ├─ 检查 owner（已有人认领？）
+  ├─ 检查 status（已完成？）
+  ├─ 检查 blockedBy（仍有未完成阻塞？）
+  ├─ updateTaskUnsafe(taskId, { owner })   ← 回写
+  └─ release lock</div>
+
+<h3>双重认领时机</h3>
+<ol style="padding-left:18px;">
+  <li><strong>启动时（line 1019）：</strong><code class="inline">tryClaimNextTask()</code> 立即执行一次，让 UI 从开始就显示活动</li>
+  <li><strong>空闲轮询时（line 854）：</strong><code class="inline">waitForNextPromptOrShutdown()</code> 自动调用，最低优先级</li>
+</ol>
+
+<h2>五、空闲通知与状态同步</h2>
+
+<h3>完成工作后自动通知</h3>
+<div class="flow">runAgent() 完成
+  │
+  ├─ 检查是否已空闲（防重复通知）
+  ├─ set isIdle: true                     ← AppState 状态更新
+  ├─ 调用 onIdleCallbacks                 ← 通知等待者
+  │
+  └─ sendIdleNotification()
+       └─ createIdleNotification(agentName, {
+             idleReason: 'available'      ← 正常完成
+                        | 'interrupted'   ← Escape 中断
+                        | 'failed',       ← 异常退出
+             summary: getLastPeerDmSummary(allMessages)
+           })
+       └─ writeToMailbox(leadAgentName, notification)
+            → Leader UI 显示 teammates 完成/空闲状态</div>
+
+<h3>Leader 端空闲等待</h3>
+<p><code class="inline">teammate.ts</code> 中提供了两个辅助函数用于 Leader 端等待 teammate 空闲：</p>
+
+<div class="flow">hasWorkingInProcessTeammates(appState): boolean
+  └─ 遍历 appState.tasks
+     └─ type === 'in_process_teammate' && status === 'running' && !isIdle
+
+waitForTeammatesToBecomeIdle(setAppState, appState): Promise&lt;void&gt;
+  └─ 找到所有 working teammates
+  └─ 注册 onIdleCallbacks
+  └─ Promise 在全部空闲时 resolve</div>
+
+<h3>InProcessTeammateTaskState 的状态字段</h3>
+<table>
+  <thead><tr><th>字段</th><th>类型</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">isIdle</code></td><td>boolean</td><td>当前是否空闲（false = 工作中）</td></tr>
+    <tr><td><code class="inline">status</code></td><td>'running' | 'completed' | 'failed' | 'killed'</td><td>任务生命周期状态</td></tr>
+    <tr><td><code class="inline">shutdownRequested</code></td><td>boolean</td><td>Leader 是否已请求关闭</td></tr>
+    <tr><td><code class="inline">pendingUserMessages</code></td><td>string[]</td><td>Leader 直接 push 的消息队列</td></tr>
+    <tr><td><code class="inline">onIdleCallbacks</code></td><td>function[]</td><td>空闲时触发的回调</td></tr>
+    <tr><td><code class="inline">permissionMode</code></td><td>PermissionMode</td><td>当前权限模式（可被 Leader 动态切换）</td></tr>
+    <tr><td><code class="inline">currentWorkAbortController</code></td><td>AbortController?</td><td>仅中断本轮工作的控制器</td></tr>
+    <tr><td><code class="inline">awaitingPlanApproval</code></td><td>boolean</td><td>待计划审批</td></tr>
+    <tr><td><code class="inline">spinnerVerb</code></td><td>string</td><td>UI 旋转动画文字</td></tr>
+  </tbody>
+</table>
+
+<h2>六、与教学版的关键设计差异</h2>
+
+<table>
+  <thead><tr><th>设计点</th><th>教学版 (s17)</th><th>生产版</th></tr></thead>
+  <tbody>
+    <tr><td><strong>空闲超时</strong></td><td>60s → shutdown</td><td>无限期存活（永不超时退出）</td></tr>
+    <tr><td><strong>工作中断</strong></td><td>无</td><td>currentWorkAbortController（Escape 只中断本轮，不杀进程）</td></tr>
+    <tr><td><strong>角色过滤</strong></td><td><code class="inline">claim_role</code> / <code class="inline">required_role</code></td><td>暂无条件（所有 teammate 共享同一 task list）</td></tr>
+    <tr><td><strong>身份重注入</strong></td><td>显式 <code class="inline">ensure_identity_context</code> 插入 identity block</td><td>TEAMMATE_SYSTEM_PROMPT_ADDENDUM 持久注入 + forkContextMessages 传递历史</td></tr>
+    <tr><td><strong>认领日志</strong></td><td><code class="inline">claim_events.jsonl</code> 追加</td><td>task file owner 字段直接回写（有锁）</td></tr>
+    <tr><td><strong>并发认领</strong></td><td>Python <code class="inline">with claim_lock</code></td><td><code class="inline">proper-lockfile</code> 文件锁 + 原子 read-check-write</td></tr>
+    <tr><td><strong>零延迟路径</strong></td><td>无（仅邮箱 + 任务板轮询）</td><td>pendingUserMessages（Leader direct push，无需 mailbox 往返）</td></tr>
+    <tr><td><strong>消息优先级</strong></td><td>邮箱 > 任务板（2 层）</td><td>pendingUserMessages > shutdown > leader > peer > task-claim（5 层）</td></tr>
+    <tr><td><strong>系统提示词持久化</strong></td><td>身份块注入 messages</td><td>TEAMMATE_SYSTEM_PROMPT_ADDENDUM 常驻系统提示词</td></tr>
+  </tbody>
+</table>
+
+<h2>七、Idle 与 Task 系统的结合</h2>
+
+<p>生产代码中 <code class="inline">tryClaimNextTask()</code> 所操作的 <code class="inline">Task</code> 是 <strong>durable task（utils/tasks.ts）</strong>，与教学版 s12 的 task record 对应：</p>
+
+<div class="flow">// Durable Task 数据结构 (utils/tasks.ts: TaskSchema)
+Task {
+  id: string
+  subject: string
+  description?: string
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  owner?: string                           ← 认领后写入
+  blockedBy: string[]
+  createdBy?: string
+  createdAt: number
+  updatedAt: number
+  completedAt?: number
+  tags?: string[]
+  metadata?: Record&lt;string, unknown&gt;
+}
+
+// 认领结果类型
+ClaimTaskResult =
+  | { success: true, task: Task }
+  | { success: false, reason: 'task_not_found' | 'already_claimed' |
+        'already_resolved' | 'blocked', task?: Task, blockedByTasks?: string[] }</div>
+
+<div class="callout-warn callout">
+  <p><strong>注意：</strong>生产版的 <code class="inline">Task</code> 与教学版有几个差异：(1) 没有 <code class="inline">claim_source</code> 字段标记 auto/manual；(2) 没有 <code class="inline">claim_role</code> / <code class="inline">required_role</code> 角色匹配；(3) 没有专门的 claim event 日志——所有信息通过 <code class="inline">owner</code> 字段和 <code class="inline">updatedAt</code> 推导。</p>
+</div>
+
+<h2>八、核心代码引用</h2>
+
+<h3>自治循环引擎</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/inProcessRunner.ts</span><span class="role">runInProcessTeammate() 完整自治循环：runAgent → set idle → waitForNextPromptOrShutdown → claimTask</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/inProcessRunner.ts</span><span class="role">waitForNextPromptOrShutdown() 空闲轮询引擎（line 689-868）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/inProcessRunner.ts</span><span class="role">findAvailableTask() / tryClaimNextTask() 任务认领（line 591-657）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/inProcessRunner.ts</span><span class="role">sendIdleNotification() 空闲通知（line 565-589）</span></div>
+
+<h3>任务系统</h3>
+<div class="file-ref"><span class="path">src/utils/tasks.ts</span><span class="role">Task 类型定义、claimTask() 原子认领（file lock）、listTasks()、updateTask()</span></div>
+
+<h3>状态模型</h3>
+<div class="file-ref"><span class="path">src/tasks/InProcessTeammateTask/types.ts</span><span class="role">InProcessTeammateTaskState 定义：isIdle / pendingUserMessages / shutdownRequested 等</span></div>
+
+<h3>空闲状态查询</h3>
+<div class="file-ref"><span class="path">src/utils/teammate.ts</span><span class="role">hasActiveInProcessTeammates() / hasWorkingInProcessTeammates() / waitForTeammatesToBecomeIdle()</span></div>
+
+<h3>空闲通知协议</h3>
+<div class="file-ref"><span class="path">src/utils/teammateMailbox.ts</span><span class="role">IdleNotificationMessage 类型、createIdleNotification()、isIdleNotification()</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/teammateInit.ts</span><span class="role">Stop hook 中 setMemberActive(false) + idle_notification 发送</span></div>
+
+<h3>Spawning</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/spawnInProcess.ts</span><span class="true">spawnInProcessTeammate()：创建 TeammateContext 和 AbortController、注册 Task</span></div>
+
+<h2>九、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px"><strong>自治智能体设计哲学：</strong>"不是让 agent 乱跑，而是让它在清晰规则下自己接住下一份工作。"</p>
+  <p style="margin:0">生产代码的自治行为不是通过教学版中"模型主动调用 idle 工具"实现的显式阶段切换，而是 <code class="inline">runInProcessTeammate()</code> 主循环的自然属性——每次 <code class="inline">runAgent()</code> 完成后自动进入 <code class="inline">waitForNextPromptOrShutdown()</code> 轮询状态。教学版追求的是"展示自治的完整概念"，生产版追求的是"可靠地保持活跃、高效地分发工作"。最大的差异在于生产版<strong>没有空闲超时</strong>（teammate 无限期存活）、<strong>没有角色匹配</strong>（所有 teammate 共享同一 task list）、<strong>没有显式身份重注入</strong>（身份通过系统提示词持久化）。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">活跃性</td><td>✅ 无限期存活，不因空闲超时丢失 teammate（节省 spawn 开销）</td></tr>
+    <tr><td>资源占用</td><td>⚠️ 500ms 轮询 + mailbox I/O 持续消耗，长时间空闲时浪费</td></tr>
+    <tr><td>可靠性</td><td>✅ proper-lockfile 确保原子认领，多 teammate 不会冲突抢任务</td></tr>
+    <tr><td>响应性</td><td>✅ pendingUserMessages 零延迟路径 + 邮箱 500ms 最大延迟</td></tr>
+    <tr><td>简洁性</td><td>✅ 不需要显式的"空闲阶段"状态机，while 循环自然实现</td></tr>
+    <tr><td>任务分发</td><td>⚠️ 无角色匹配，所有 teammate 无条件竞争同一任务池</td></tr>
+  </table>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-06-21<br>
+  关联文档: <a href="../../docs/zh/s17-autonomous-agents.md" style="color:var(--accent)">教学版 s17 中文文档</a> · <a href="agent-teams-analysis.html" style="color:var(--accent)">Agent Teams 分析</a> · <a href="team-protocols-analysis.html" style="color:var(--accent)">Team Protocols 分析</a>
+</p>
+
+</div>
+</body>
+</html>

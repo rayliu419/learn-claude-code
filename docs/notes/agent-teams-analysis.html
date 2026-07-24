@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Agent Teams / Swarm 系统设计分析</title>
+<style>
+  :root {
+    --bg: #f5faf6;
+    --surface: #e8f5ec;
+    --border: #c3dbcc;
+    --text: #2d3a31;
+    --text-dim: #6b8a75;
+    --accent: #2d8a4e;
+    --green: #1a6e30;
+    --orange: #b8860b;
+    --red: #c0392b;
+    --purple: #6b4e9e;
+    --code-bg: #eaf5ef;
+    --inline-code: #2d3a31;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:13px; line-height:1.45;
+  }
+
+  /* Hero */
+  .hero {
+    background:linear-gradient(135deg,#f5faf6 0%,#e8f5ec 50%,#dcefe3 100%);
+    border-bottom:1px solid var(--border); padding:20px 24px 14px; text-align:center;
+  }
+  .hero h1 { font-size:1.35em; font-weight:700; color:#1a3325; margin-bottom:2px; letter-spacing:-0.3px; }
+  .hero .sub { color:var(--text-dim); font-size:0.9em; }
+  .hero .meta { margin-top:8px; display:flex; gap:16px; justify-content:center; flex-wrap:wrap; color:var(--text-dim); font-size:0.82em; }
+
+  /* Container */
+  .container { max-width:900px; margin:0 auto; padding:18px 24px 36px; }
+
+  /* Headings */
+  h2 { font-size:1.2em; color:#1a3325; margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.02em; color:#2d3a31; margin:16px 0 6px; }
+  h4 { font-size:0.95em; color:var(--text); margin:10px 0 4px; }
+  p { margin:6px 0; }
+
+  /* Cards */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 14px; margin:8px 0; }
+
+  /* Tables */
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:0.9em; }
+  th,td { border:1px solid var(--border); padding:5px 8px; text-align:left; }
+  th { background:var(--surface); color:#1a3325; font-weight:600; }
+  tr:nth-child(even) { background:rgba(0,0,0,0.03); }
+
+  /* Code */
+  code { font-family:"SF Mono","Fira Code","Cascadia Code",monospace; font-size:0.88em; }
+  code.inline { background:var(--code-bg); color:var(--inline-code); padding:1px 5px; border-radius:3px; border:1px solid var(--border); }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:10px; overflow-x:auto; margin:8px 0; font-size:0.8em; line-height:1.45; }
+  pre code { background:none; padding:0; border:none; }
+
+  /* Badges */
+  .badge { display:inline-block; padding:1px 7px; border-radius:999px; font-size:0.78em; font-weight:600; }
+  .badge-green{background:#d4edda;color:var(--green)} .badge-orange{background:#fdf0d5;color:var(--orange)}
+  .badge-red{background:#fde2e2;color:var(--red)} .badge-purple{background:#e8ddf5;color:var(--purple)}
+  .badge-blue{background:#d6e9f8;color:var(--accent)}
+
+  /* Flowchart */
+  .flow {
+    background:var(--surface); border:1px solid var(--border); border-radius:4px;
+    padding:10px 14px; margin:6px 0; font-family:"SF Mono","Fira Code",monospace;
+    font-size:0.76em; line-height:1.55; white-space:pre; overflow-x:auto;
+  }
+
+  /* Callout */
+  .callout { border-left:3px solid var(--accent); background:#e3f0e8; padding:6px 10px; margin:6px 0; border-radius:0 4px 4px 0; }
+  .callout p { margin:2px 0; }
+  .callout-warn { border-left-color:var(--orange); background:#faf3e0; }
+  .callout-tip { border-left-color:var(--green); background:#d4edda; }
+
+  /* File refs */
+  .file-ref { display:flex; align-items:baseline; gap:6px; padding:3px 0; }
+  .file-ref .path { font-family:"SF Mono","Fira Code",monospace; font-size:0.82em; color:var(--accent); min-width:280px; }
+  .file-ref .role { color:var(--text-dim); font-size:0.88em; }
+
+  /* Lifecycle bar */
+  .lifecycle-bar { display:flex; border-radius:6px; overflow:hidden; height:28px; margin:8px 0; font-size:0.72em; font-weight:600; }
+  .lifecycle-bar div { display:flex; align-items:center; justify-content:center; }
+
+  /* Lists in cards */
+  .card ul, .card ol { padding-left:18px; color:var(--text); margin:4px 0; }
+  .card li { margin:2px 0; }
+
+  /* Call chain */
+  .call-chain {
+    font-family:"SF Mono","Fira Code","Cascadia Code",monospace;
+    font-size:0.76em; line-height:1.65; overflow-x:auto;
+  }
+  .call-chain .func { color:var(--green); font-weight:600; }
+  .call-chain .file { color:var(--text-dim); font-size:0.9em; }
+  .call-chain .arrow { color:var(--border); }
+  .call-chain .comment { color:var(--text-dim); font-style:italic; }
+  .indent-1 { padding-left:18px; }
+  .indent-2 { padding-left:36px; }
+  .indent-3 { padding-left:54px; }
+  .indent-4 { padding-left:72px; }
+  .dot { color:var(--border); margin-right:4px; }
+  .sep { border:none; border-top:1px dashed var(--border); margin:14px 0; }
+
+  @media (max-width:640px) {
+    .hero h1 { font-size:1.2em; }
+    .file-ref { flex-direction:column; gap:1px; }
+    .file-ref .path { min-width:unset; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>Claude Code Agent Teams / Swarm 系统设计分析</h1>
+  <p class="sub">多 Agent 团队协作框架：持久队友、邮箱通信、三种执行后端、权限代理</p>
+  <div class="meta">
+    <span>~/.claude/teams/&lt;name&gt;/config.json</span>
+    <span>三层身份解析</span>
+    <span>四种执行模式</span>
+    <span>结构化协议消息</span>
+  </div>
+</header>
+
+<div class="container">
+
+<h2>一、总览</h2>
+
+<p>Claude Code 的 Swarm 系统是一套<strong>多 Agent 团队协作框架</strong>，支持 Leader 创建团队、Spawn 持久队友、通过 Mailbox 互通消息、通过 Coordinator 模式编排异步 Worker。它从教学 demo 的 <code class="inline">teammate + inbox + independent loop</code> 三层模型演进到完整的生产级实现，涵盖三种执行后端（tmux / iTerm2 / in-process）、文件锁通信、权限代理协调和运行模式自动检测。</p>
+
+<h3>核心概念对比</h3>
+<table>
+  <thead><tr><th>概念</th><th>教学版 (s15)</th><th>生产版 (Claude Code)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>团队定义</strong></td><td>三字段 JSON</td><td><code class="inline">TeamFile</code> 含成员、权限、隐式面板、worktree 路径等 10+ 字段</td></tr>
+    <tr><td><strong>队友模型</strong></td><td><code class="inline">{"name","role","status"}</code></td><td><code class="inline">TeammateIdentity</code> + <code class="inline">SpawnConfig</code> + <code class="inline">TaskState</code> 多层模型</td></tr>
+    <tr><td><strong>邮箱</strong></td><td>JSONL 无锁</td><td><code class="inline">proper-lockfile</code> + 结构化协议 + 12 种消息类型</td></tr>
+    <tr><td><strong>执行方式</strong></td><td>单 Python 线程</td><td>三种 Backend + AsyncLocalStorage 隔离</td></tr>
+    <tr><td><strong>权限模型</strong></td><td>无</td><td>Worker → Mailbox → Leader → UI 权限代理</td></tr>
+    <tr><td><strong>生命周期</strong></td><td><code class="inline">while True</code></td><td><code class="inline">spawn → init → run → idle notify → shutdown (request/approve/force)</code></td></tr>
+  </tbody>
+</table>
+
+<h2>二、核心数据结构</h2>
+
+<h3>TeamFile — 团队注册中心</h3>
+<p>团队配置文件是系统的中枢：</p>
+<div class="flow">TeamFile {
+  name: string              // 团队名
+  description?: string      // 描述
+  createdAt: number
+  leadAgentId: string       // 确定性 Agent ID: "team-lead@{teamName}"
+  leadSessionId?: string    // 实际 Session UUID
+  hiddenPaneIds?: string[]  // 已隐藏的 tmux 面板
+  teamAllowedPaths?: []     // 团队级别路径权限白名单
+
+  members: [{
+    agentId: string         // "alice@my-team"
+    name: string            // "alice"
+    model?: string          // 模型覆盖
+    color?: string          // UI 颜色
+    planModeRequired?: boolean
+    tmuxPaneId: string
+    cwd: string
+    worktreePath?: string   // 可选 git worktree 隔离
+    sessionId?: string
+    subscriptions: string[]
+    backendType?: BackendType
+    isActive?: boolean      // false = idle, undefined/true = active
+    mode?: PermissionMode
+  }]
+}</div>
+
+<div class="callout-tip callout">
+  <p><strong>设计要点：</strong>团队状态完全通过共享磁盘的 config.json 同步，不需要 Leader 主动心跳。ssLeader 和 teammate 各自读写同一份文件。</p>
+</div>
+
+<h3>Teammate 身份（三层优先级）</h3>
+<div class="card">
+  <table>
+    <tr><th>优先级</th><th>机制</th><th>来源</th><th>场景</th></tr>
+    <tr><td><span class="badge badge-green">1</span></td><td>AsyncLocalStorage</td><td><code class="inline">runWithTeammateContext()</code></td><td>In-process 队友</td></tr>
+    <tr><td><span class="badge badge-blue">2</span></td><td>dynamicTeamContext</td><td>CLI args (--agent-id)</td><td>tmux/iTerm2 队友</td></tr>
+    <tr><td><span class="badge badge-purple">3</span></td><td>环境变量</td><td><code class="inline">CLAUDE_CODE_AGENT_ID</code></td><td>旧版兼容</td></tr>
+  </table>
+</div>
+
+<div class="callout-warn callout">
+  <p><strong>关键设计原则：</strong><code class="inline">isTeammate()</code> 对 Leader 返回 <strong>false</strong>。Leader 不应拥有 teammate 的行为（心跳、邮箱轮询）。Leader 的身份通过 <code class="inline">formatAgentId('team-lead', teamName)</code> 确定，但保持 <code class="inline">isTeammate()</code> 返回 false 以避免副作用。</p>
+</div>
+
+<h3>Mailbox 消息系统（12 种消息类型）</h3>
+<table>
+  <thead><tr><th>消息类型</th><th>方向</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td><code class="inline">idle_notification</code></td><td>Teammate → Leader</td><td>队友空闲通知（含完成摘要）</td></tr>
+    <tr><td><code class="inline">permission_request</code></td><td>Worker → Leader</td><td>权限请求（需 Leader 批准）</td></tr>
+    <tr><td><code class="inline">permission_response</code></td><td>Leader → Worker</td><td>权限批准/拒绝</td></tr>
+    <tr><td><code class="inline">shutdown_request</code></td><td>Leader → Teammate</td><td>关闭请求</td></tr>
+    <tr><td><code class="inline">shutdown_approved</code></td><td>Teammate → Leader</td><td>确认关闭</td></tr>
+    <tr><td><code class="inline">shutdown_rejected</code></td><td>Teammate → Leader</td><td>拒绝关闭</td></tr>
+    <tr><td><code class="inline">plan_approval_request</code></td><td>Worker → Leader</td><td>计划审批请求</td></tr>
+    <tr><td><code class="inline">plan_approval_response</code></td><td>Leader → Worker</td><td>计划审批响应</td></tr>
+    <tr><td><code class="inline">task_assignment</code></td><td>Leader → Teammate</td><td>任务指派</td></tr>
+    <tr><td><code class="inline">team_permission_update</code></td><td>Leader → All</td><td>团队权限广播</td></tr>
+    <tr><td><code class="inline">mode_set_request</code></td><td>Leader → Teammate</td><td>模式切换指令</td></tr>
+    <tr><td><code class="inline">sandbox_permission_*</code></td><td>Worker ↔ Leader</td><td>沙箱网络权限</td></tr>
+  </tbody>
+</table>
+
+<h3>存储与并发安全</h3>
+<div class="flow">存储路径: .claude/teams/{team_name}/inboxes/{agent_name}.json
+格式: JSON 数组 [TeammateMessage]
+
+写入流程:
+  writeToMailbox(recipient, message)
+  ├─ ensureInboxDir()         ← 创建 inbox 目录
+  ├─ lockfile.lock(inboxPath) ← proper-lockfile（10次重试, 5-100ms退避）
+  ├─ re-read messages         ← lock 后重读（避免竞态）
+  ├─ messages.push(newMessage)
+  ├─ writeFile()              ← 写回磁盘
+  └─ lockfile.release()
+
+关键结构体:
+  TeammateMessage {
+    from: string              // 发件人
+    text: string              // 消息内容（结构化协议时为 JSON stringify 后的协议对象）
+    timestamp: string         // ISO 时间戳
+    read: boolean             // 是否已读
+    color?: string            // 发件人颜色
+    summary?: string          // 5-10 字预览摘要
+  }</div>
+
+<h2>三、启动与调用流程</h2>
+
+<h3>完整 In-Process Teammate 生命周期</h3>
+<div class="card">
+  <div class="call-chain">
+    <div><span class="func">TeamCreateTool.call()</span> <span class="file">[TeamCreateTool.ts:128]</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> 检查是否已在团队中</div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">generateUniqueTeamName()</span> <span class="comment">— 重名自动生词</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">formatAgentId('team-lead', teamName)</span> <span class="comment">— 确定性 Leader ID</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">writeTeamFileAsync()</span> <span class="comment">— 写入 config.json</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">registerTeamForSessionCleanup()</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">resetTaskList()</span> + <span class="func">ensureTasksDir()</span> <span class="comment">— 创建任务目录</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">setAppState</span> → teamContext 写入 AppState</div>
+
+    <div style="margin-top:6px;"><span class="func">spawnInProcessTeammate()</span> <span class="file">[spawnInProcess.ts:104]</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">formatAgentId(name, teamName)</span> <span class="comment">— 确定性 Agent ID</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">createAbortController()</span> <span class="comment">— 独立，不链接 parent</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">createTeammateContext()</span> <span class="comment">— AsyncLocalStorage 上下文</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">createTaskStateBase()</span> <span class="comment">— InProcessTeammateTaskState</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">registerCleanup()</span> <span class="comment">— 进程退出时 abort</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">registerTask()</span> <span class="comment">— 注册到 AppState.tasks</span></div>
+
+    <div style="margin-top:6px;"><span class="func">startInProcessTeammate()</span> <span class="file">[inProcessRunner.ts]</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">runWithTeammateContext()</span> <span class="comment">— 设置 AsyncLocalStorage</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">runAgent()</span> <span class="comment">— 驱动 agent 循环</span></div>
+    <div class="indent-3"><span class="arrow">└─</span> 每轮: drain inbox → 路由结构化消息 → agent loop</div>
+    <div class="indent-3" style="font-style:italic;color:var(--text-dim);">→ idle 时: executeExtractMemories → 发送 idle_notification</div>
+
+    <div style="margin-top:6px;"><span class="func">initializeTeammateHooks()</span> <span class="file">[teammateInit.ts:28]</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> 读取 team file → 获取 leader ID</div>
+    <div class="indent-1"><span class="arrow">├─</span> 应用 teamAllowedPath 权限</div>
+    <div class="indent-1"><span class="arrow">└─</span> <span class="func">addFunctionHook('Stop', ...)</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> <span class="func">setMemberActive(false)</span> + <span class="func">writeToMailbox(idle_notification)</span></div>
+
+    <div style="margin-top:6px;">═══ Shutdown ═══</div>
+    <div><span class="func">InProcessBackend.terminate()</span> <span class="file">[InProcessBackend.ts:192]</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> createShutdownRequestMessage → writeToMailbox</div>
+    <div class="indent-1"><span class="arrow">└─</span> requestTeammateShutdown() → task.shutdownRequested = true</div>
+    <div><span class="func">InProcessBackend.kill()</span> <span class="file">[InProcessBackend.ts:261]</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> killInProcessTeammate() → abortController.abort()</div>
+  </div>
+</div>
+
+<hr class="sep">
+
+<h3>后端自动检测流程</h3>
+<div class="card">
+  <div class="call-chain">
+    <div><span class="func">detectAndGetBackend()</span> <span class="file">[registry.ts:136]</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">isInsideTmux()</span>?</div>
+    <div class="indent-2"><span class="arrow">Yes ──→</span> <span style="color:var(--green);font-weight:600;">TmuxBackend</span> <span class="comment">— 原生 tmux 面板</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">isInITerm2()</span>?</div>
+    <div class="indent-2"><span class="arrow">├─</span> <span class="func">isIt2CliAvailable()</span>?</div>
+    <div class="indent-3"><span class="arrow">Yes ──→</span> <span style="color:var(--green);font-weight:600;">ITermBackend</span> <span class="comment">— iTerm2 原生分屏</span></div>
+    <div class="indent-3"><span class="arrow">No ──→</span> <span class="func">isTmuxAvailable()</span>?</div>
+    <div class="indent-4"><span class="arrow">Yes ──→</span> <span style="color:var(--orange);font-weight:600;">TmuxBackend</span> <span class="comment">— iTerm2 内回落 tmux</span></div>
+    <div class="indent-4"><span class="arrow">No ──→</span> <span style="color:var(--red);font-weight:600;">Throw</span> <span class="comment">— 提示安装 it2</span></div>
+
+    <div class="indent-1"><span class="arrow">├─</span> <span class="func">isTmuxAvailable()</span>?</div>
+    <div class="indent-2"><span class="arrow">Yes ──→</span> <span style="color:var(--green);font-weight:600;">TmuxBackend</span> <span class="comment">— 外部 tmux session</span></div>
+
+    <div class="indent-1"><span class="arrow">└─</span> <span style="color:var(--red);font-weight:600;">Throw</span> <span class="comment">— 提示安装 tmux</span></div>
+
+    <div style="margin-top:6px;"><span class="func">isInProcessEnabled()</span> <span class="file">[registry.ts:351]</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> non-interactive session? → <span style="color:var(--green);">true</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> mode 'in-process'? → <span style="color:var(--green);">true</span></div>
+    <div class="indent-1"><span class="arrow">├─</span> mode 'tmux'? → <span style="color:var(--red);">false</span></div>
+    <div class="indent-1"><span class="arrow">└─</span> mode 'auto'? → 检查环境</div>
+    <div class="indent-2"><span class="arrow">├─</span> inProcessFallbackActive? → <span style="color:var(--green);">true</span></div>
+    <div class="indent-2"><span class="arrow">└─</span> 不在 tmux 且不在 iTerm2? → <span style="color:var(--green);">true</span></div>
+  </div>
+</div>
+
+<h2>四、Coordinator 模式</h2>
+
+<p>Coordinator 模式是<strong>不同于 Swarm 的多 Agent 编排方式</strong>——通过 <code class="inline">AgentTool</code> 起 worker，通过 <code class="inline">SendMessageTool</code> 继续 worker。</p>
+
+<div class="card">
+  <h3 style="margin-top:0">Coordinator 系统提示词核心规则</h3>
+  <ul>
+    <li><strong>角色约束：</strong>Coordinator 负责"分解 → 派发 → 综合 → 再派发"，不直接执行工具</li>
+    <li><strong>Worker 独立性：</strong>每个 worker prompt 必须是<strong>自包含</strong>的——Worker 看不到 Coordinator 的对话历史</li>
+    <li><strong>并行优先：</strong>将独立 task 并行发给多个 worker（research、implementation、verification）</li>
+    <li><strong>合成最重要：</strong>Worker 完成后，Coordinator 必须阅读 findings，形成具体的实现规格</li>
+    <li><strong>验证独立性：</strong>Verification worker 应"新鲜视角"审查代码，不继承前 worker 的 context</li>
+  </ul>
+</div>
+
+<h3>Coordinator Workflow 示例</h3>
+<div class="flow">User: "Auth module 有个 null pointer, 帮忙修一下"
+
+Coordinator:
+  ├─ AgentTool("Investigate auth bug", subagent: "worker")
+  └─ AgentTool("Research auth tests", subagent: "worker")
+  → "从两个角度研究，稍后汇报"
+
+User (task-notification):
+  → [worker A 完成: 在 validate.ts:42 发现 null pointer]
+
+Coordinator:
+  └─ SendMessage(worker A, "在 validate.ts:42 加 null check... Commit 并报告 hash")
+  → "修复进行中"
+
+User: "怎么样了?"
+
+Coordinator:
+  → "新 test 的修复在跑，等 test suite 的结果"</div>
+
+<h3>Worker 权限代理</h3>
+<div class="flow">Worker 遇到权限弹窗
+  │
+  ├─ 尝试 Bash 分类器自动批准
+  │   ↓ 失败
+  └─ createPermissionRequest()
+       ├─ 创建 permission_request
+       ├─ writeToMailbox(leader, request)    ← 写入 Leader 的 inbox
+       └─ registerPermissionCallback()       ← 注册回调等待响应
+
+Leader useSwarmPermissionPoller
+  ├─ 轮询自己的 inbox
+  ├─ 检测到 permission_request
+  ├─ 用户批准/拒绝 → writeToMailbox(worker, response)  ← 写入 Worker 的 inbox
+  └─ UI 显示处理结果
+
+Worker
+  ├─ 轮到自己 inbox → 读到 permission_response
+  └─ resolve 回调 → 继续/拒绝执行</div>
+
+<h2>五、核心代码引用</h2>
+
+<h3>Swarm 基础设施</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/teamHelpers.ts</span><span class="role">TeamFile 类型定义、读写/清理/成员管理、worktree 销毁、session 团队清理</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/types.ts</span><span class="role">后端类型体系：BackendType、PaneBackend 接口、TeammateExecutor 接口、TeammateSpawnConfig</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/registry.ts</span><span class="role">后端注册中心：自动检测、缓存、in-process 启用判断、Executor 工厂方法</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/InProcessBackend.ts</span><span class="role">In-process TeammateExecutor 实现（spawn / send / terminate / kill / isActive）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/TmuxBackend.ts</span><span class="role">Tmux 面板管理（create / sendCommand / kill / hide / show / setBorderColor）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/ITermBackend.ts</span><span class="role">iTerm2 原生分屏管理（it2 CLI 封装）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/PaneBackendExecutor.ts</span><span class="role">PaneBackend → TeammateExecutor 适配层</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/backends/detection.ts</span><span class="role">环境检测（isInsideTmux / isInITerm2 / isTmuxAvailable / isIt2CliAvailable）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/constants.ts</span><span class="role">常量定义（TEAM_LEAD_NAME / SWARM_SESSION_NAME / 环境变量）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/teammateModel.ts</span><span class="role">Hardcoded teammate fallback 模型（当前 Opus 4.6）</span></div>
+
+<h3>Teammate 生命周期</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/spawnInProcess.ts</span><span class="role">In-process teammate 生成：TeammateContext 创建、AbortController 分配、AppState 注册</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/spawnUtils.ts</span><span class="role">CLI flag 继承、环境变量转发（API provider / proxy / config 等）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/inProcessRunner.ts</span><span class="role">In-process teammate agent loop 驱动（1552 行，核心引擎）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/teammateInit.ts</span><span class="true">Teammate 钩子初始化：Stop hook 注册、idle notification、team 权限应用</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/teammatePromptAddendum.ts</span><span class="role">Teammate 系统提示词附加：通信规则（必须使用 SendMessage）</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/reconnection.ts</span><span class="role">Session 恢复时的 swarm 上下文重建</span></div>
+
+<h3>身份与通信</h3>
+<div class="file-ref"><span class="path">src/utils/teammate.ts</span><span class="role">身份系统：三层解析链、getAgentId/isTeammate/getTeamName/active-teammate 检查</span></div>
+<div class="file-ref"><span class="path">src/utils/teammateContext.ts</span><span class="role">AsyncLocalStorage 上下文：createTeammateContext/runWithTeammateContext</span></div>
+<div class="file-ref"><span class="path">src/utils/teammateMailbox.ts</span><span class="role">Mailbox 系统：读写/锁/12 种消息类型/结构化消息路由/isIdleNotification 等检测函数</span></div>
+<div class="file-ref"><span class="path">src/utils/teamDiscovery.ts</span><span class="role">团队发现：扫描 teams 目录，提取 teammate status</span></div>
+
+<h3>权限系统</h3>
+<div class="file-ref"><span class="path">src/utils/swarm/permissionSync.ts</span><span class="role">Swarm 权限请求/响应同步：文件存储 + 锁安全</span></div>
+<div class="file-ref"><span class="path">src/utils/swarm/leaderPermissionBridge.ts</span><span class="role">Leader 侧权限桥接</span></div>
+<div class="file-ref"><span class="path">src/hooks/toolPermission/handlers/swarmWorkerHandler.ts</span><span class="role">Worker 侧权限处理：分类器尝试 → mailbox 转发 → 回调等待</span></div>
+
+<h3>状态管理与 UI</h3>
+<div class="file-ref"><span class="path">src/state/teammateViewHelpers.ts</span><span class="role">Teammate view 状态管理</span></div>
+<div class="file-ref"><span class="path">src/utils/collapseTeammateShutdowns.ts</span><span class="role">Shutdown 通知折叠</span></div>
+<div class="file-ref"><span class="path">src/components/teams/TeamsDialog.tsx</span><span class="role">团队管理对话框</span></div>
+<div class="file-ref"><span class="path">src/components/teams/TeamStatus.tsx</span><span class="role">Footer 团队状态</span></div>
+<div class="file-ref"><span class="path">src/components/Spinner/TeammateSpinnerTree.tsx</span><span class="role">队友运行状态树</span></div>
+<div class="file-ref"><span class="path">src/components/Spinner/TeammateSpinnerLine.tsx</span><span class="role">单队友旋转动画</span></div>
+<div class="file-ref"><span class="path">src/components/TeammateViewHeader.tsx</span><span class="role">Swarm 视图头部组件</span></div>
+
+<h3>工具层</h3>
+<div class="file-ref"><span class="path">src/tools/TeamCreateTool/TeamCreateTool.ts</span><span class="role">Team 创建工具</span></div>
+<div class="file-ref"><span class="path">src/tools/TeamDeleteTool/TeamDeleteTool.ts</span><span class="role">Team 删除工具</span></div>
+
+<h3>Coordinator 模式</h3>
+<div class="file-ref"><span class="path">src/coordinator/coordinatorMode.ts</span><span class="role">Coordinator system prompt、worker 工具可见性、workflow 编排规则</span></div>
+
+<h2>六、关键设计决策</h2>
+
+<table>
+  <thead><tr><th>决策</th><th>选择</th><th>理由</th></tr></thead>
+  <tbody>
+    <tr><td>Team 状态存储</td><td>共享磁盘 JSON 文件</td><td>不需要 Leader 主动心跳，任何 teammate 重启后都能通过配置文件恢复状态</td></tr>
+    <tr><td>通信方式</td><td>文件邮箱 + 锁</td><td>解耦消息收发，支持跨进程通信（tmux），无需网络 RPC</td></tr>
+    <tr><td>In-process 隔离</td><td>AsyncLocalStorage</td><td>共享进程资源（API client、MCP）同时隔离身份，避免全局变量冲突</td></tr>
+    <tr><td>AbortController</td><td>独立不链接 parent</td><td>Leader query 中断时 teammate 继续工作，避免级联取消</td></tr>
+    <tr><td>Leader 身份</td><td><code class="inline">formatAgentId('team-lead', teamName)</code> 但 <code class="inline">isTeammate() = false</code></td><td>有确定性 ID 供 teammate 发消息，但不触发 teammate 的副效应</td></tr>
+    <tr><td>Coordinator vs Swarm</td><td>两套独立编排模式</td><td>Coordinator 适合短生命周期 worker 编排，Swarm 适合长生命周期 teammate 协作</td></tr>
+    <tr><td>权限代理</td><td>Mailbox 转发</td><td>用户只需在一个界面（Leader）处理所有权限，无需每个 teammate 弹窗</td></tr>
+    <tr><td>后端回落</td><td>tmux → iTerm2 → in-process</td><td>确保在任何终端环境下都能使用 swarm，自动检测无需用户配置</td></tr>
+  </tbody>
+</table>
+
+<h2>七、教学版 vs 生产版要点对照</h2>
+
+<table>
+  <thead><tr><th>维度</th><th>教学版 (s15)</th><th>生产版</th></tr></thead>
+  <tbody>
+    <tr><td><strong>名册持久化</strong></td><td><code class="inline">.team/config.json</code></td><td><code class="inline">~/.claude/teams/{name}/config.json</code>，含 10+ 字段</td></tr>
+    <tr><td><strong>队友 spawn</strong></td><td><code class="inline">threading.Thread(target=teammate_loop)</code></td><td><code class="inline">InProcessBackend.spawn()</code> + <code class="inline">runWithTeammateContext()</code> + <code class="inline">InProcessTeammateTask</code></td></tr>
+    <tr><td><strong>队友循环</strong></td><td><code class="inline">while True: drain → work</code></td><td><code class="inline">runAgent()</code> 复用主 agent loop，共享 prompt cache</td></tr>
+    <tr><td><strong>消息</strong></td><td>JSONL 追加 + 清空</td><td>JSON + proper-lockfile + 结构化协议 + 已读标记 + 分类路由</td></tr>
+    <tr><td><strong>队友状态</strong></td><td><code class="inline">{"free", "working", "closed"}</code></td><td><code class="inline">isActive</code> 布尔 + <code class="inline">mode</code> 权限模式 + <code class="inline">idle_reason</code> + <code class="inline">shutdownRequested</code></td></tr>
+    <tr><td><strong>通信协议</strong></td><td>自由文本消息</td><td>12 种结构化协议 + 非结构化分流</td></tr>
+    <tr><td><strong>shutdown</strong></td><td>无</td><td>request → approve/reject → force kill 三级</td></tr>
+    <tr><td><strong>权限</strong></td><td>无</td><td>Worker 权限代理 + 分类器自动批准 + timetable 响应 + 锁安全</td></tr>
+    <tr><td><strong>执行方式</strong></td><td>单进程线程</td><td>tmux / iTerm2 / in-process 三选一 + 自动检测</td></tr>
+    <tr><td><strong>前端隔离</strong></td><td>tmux 面板（教学版 s18 才涉及）</td><td>git worktree + tmux pane 双隔离</td></tr>
+    <tr><td><strong>清理</strong></td><td>无</td><td>session cleanup + worktree destroy + orphan pane kill</td></tr>
+  </tbody>
+</table>
+
+<h2>八、总结</h2>
+
+<div class="card">
+  <p style="margin:0 0 4px"><strong>Swarm 系统设计哲学：</strong>"配置文件优先 + 文件通信 + 三层身份 + 环境自适应执行。"</p>
+  <p style="margin:0">整个系统没有中心化的团队状态服务器。所有团队状态通过共享磁盘的 <code class="inline">config.json</code> 同步；所有通信通过文件邮箱加锁完成；teammate 身份通过 AsyncLocalStorage → dynamicTeamContext → 环境变量三层解析；执行后端通过环境自动检测从 tmux 逐级回落到 in-process。</p>
+</div>
+
+<div class="card">
+  <h4 style="margin-top:0">关键设计权衡</h4>
+  <table>
+    <tr><td style="width:60px">简洁性</td><td>✅ 共享文件架构不需要中心服务器，tmux teammates 只需 CLI flags</td></tr>
+    <tr><td>并发安全</td><td>⚠️ 文件锁虽安全但可能成为瓶颈（10 次重试 + 100ms 最大退避）</td></tr>
+    <tr><td>灵活性</td><td>✅ 三种执行后端 + 自动检测 + Coordinator/Swarm 两套编排模式</td></tr>
+    <tr><td>隔离性</td><td>✅ In-process 共享 API 连接（成本优势）；tmux 完整进程隔离（安全）</td></tr>
+    <tr><td>恢复能力</td><td>✅ Session 恢复时通过配置文件重建 teamContext，teammate 可继续工作</td></tr>
+    <tr><td>可观测性</td><td>✅ idle_notification + 状态树 + spinner + collapse 机制，精确呈现 swarm 状态</td></tr>
+  </table>
+</div>
+
+<p style="text-align:center;color:var(--text-dim);margin-top:24px;font-size:0.85em">
+  基于 Claude Code 源码分析 · 2026-06-21<br>
+  关联文档: <a href="../../docs/zh/s15-agent-teams.md" style="color:var(--accent)">教学版 s15 中文文档</a> · <a href="task-system-analysis.html" style="color:var(--accent)">任务系统分析</a>
+</p>
+
+</div>
+</body>
+</html>
